@@ -96,7 +96,7 @@ func TestRepeatStateAndLimit(t *testing.T) {
 		if err != nil {
 			t.Fatalf("compile: %v", err)
 		}
-		out, _, err := prog.Invoke(ctx, json.RawMessage(`{}`), exec)
+		out, _, err := invoke3(prog, ctx, json.RawMessage(`{}`), exec)
 		if err != nil {
 			t.Fatalf("invoke: %v", err)
 		}
@@ -146,7 +146,7 @@ func TestRepeatStateAndLimit(t *testing.T) {
 		if err != nil {
 			t.Fatalf("compile: %v", err)
 		}
-		_, _, err = prog.Invoke(ctx, json.RawMessage(`{}`), exec)
+		_, _, err = invoke3(prog, ctx, json.RawMessage(`{}`), exec)
 		if err != nil {
 			t.Fatalf("invoke: %v", err)
 		}
@@ -189,7 +189,7 @@ func TestRepeatStateAndLimit(t *testing.T) {
 		if err != nil {
 			t.Fatalf("compile: %v", err)
 		}
-		_, _, err = prog.Invoke(ctx, json.RawMessage(`{}`), exec)
+		_, _, err = invoke3(prog, ctx, json.RawMessage(`{}`), exec)
 		var ie *einoruntime.Error
 		if !errors.As(err, &ie) || ie.Code != einoruntime.ErrIterationLimit {
 			t.Fatalf("want iteration_limit, got %v", err)
@@ -221,7 +221,7 @@ func TestRepeatStateAndLimit(t *testing.T) {
 		if err != nil {
 			t.Fatalf("compile: %v", err)
 		}
-		out, _, err := prog.Invoke(ctx, json.RawMessage(`{}`), exec)
+		out, _, err := invoke3(prog, ctx, json.RawMessage(`{}`), exec)
 		if err != nil {
 			t.Fatalf("invoke: %v", err)
 		}
@@ -276,7 +276,7 @@ func TestRepeatNestedBranchIdentity(t *testing.T) {
 		if err != nil {
 			t.Fatalf("compile: %v", err)
 		}
-		_, _, err = prog.Invoke(ctx, json.RawMessage(`{}`), func(ctx context.Context, c einoruntime.Call) (json.RawMessage, error) {
+		_, _, err = invoke3(prog, ctx, json.RawMessage(`{}`), func(ctx context.Context, c einoruntime.Call) (json.RawMessage, error) {
 			// iter0: state acc=0 → low → lo emits 1. iter1: acc=1 → low
 			// → lo emits 2. iter2: acc=2 → high → hi emits 99 → until.
 			id := nodeID(c.Path)
@@ -339,7 +339,7 @@ func TestRepeatNestedBranchIdentity(t *testing.T) {
 		if err != nil {
 			t.Fatalf("compile: %v", err)
 		}
-		_, _, err = prog.Invoke(ctx, json.RawMessage(`{}`), exec)
+		_, _, err = invoke3(prog, ctx, json.RawMessage(`{}`), exec)
 		if err != nil {
 			t.Fatalf("invoke: %v", err)
 		}
@@ -397,7 +397,7 @@ func TestRepeatNestedBranchIdentity(t *testing.T) {
 		if err != nil {
 			t.Fatalf("compile: %v", err)
 		}
-		_, _, err = prog.Invoke(runCtx, json.RawMessage(`{}`), exec)
+		_, _, err = invoke3(prog, runCtx, json.RawMessage(`{}`), exec)
 		if err == nil {
 			t.Fatal("cancelled run returned success")
 		}

@@ -55,6 +55,12 @@ type runJournal struct {
 	unknown  atomic.Bool // an effect outcome is uncertain
 	recovery atomic.Bool // a required commit failed mid-run
 
+	suspending atomic.Bool // a wait committed; the leaf gate is closed
+
+	attempts atomic.Int64 // attempt commits for the Usage snapshot
+	waitsMu  sync.Mutex
+	waits    []WaitRequest // outstanding waits in commit order
+
 	clock *runClock
 }
 
@@ -111,11 +117,64 @@ func (j *runJournal) commit(ctx context.Context, path string, attempt int,
 	return nil
 }
 
+// commitEnvelope sends the one atomic suspension boundary: events plus
+// the staged checkpoint envelope, under the waiting transition (§8.3
+// step 4). A failure leaves the run running, never waiting.
+func (j *runJournal) commitEnvelope(ctx context.Context, tr StateTransition,
+	events []Event, env *CheckpointEnvelope) error {
+	if j.store == nil {
+		return nil
+	}
+	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), persistenceTimeout)
+	defer cancel()
+	_, err := j.store.Commit(pctx, j.ref, RunCommit{
+		CommitID:   j.commitID(j.ref.RunID, j.gen),
+		Events:     events,
+		Checkpoint: env,
+		Transition: tr,
+	})
+	if err != nil {
+		var ie *Error
+		if errors.As(err, &ie) {
+			return err
+		}
+		return &Error{Code: ErrStorageFailed, Err: err,
+			Message: "run store commit failed"}
+	}
+	return nil
+}
+
+// usage snapshots the journal's spent budget for the checkpoint
+// envelope; the clock is already frozen when the caller is quiescent.
+func (j *runJournal) usage() Usage {
+	return Usage{
+		Activations:          int(j.acts.Load()),
+		Attempts:             int(j.attempts.Load()),
+		CompletedOutputBytes: j.outBytes.Load(),
+		ActiveMS:             j.clock.ActiveMS(),
+	}
+}
+
+// outstandingWaits returns the durable waits in commit order.
+func (j *runJournal) outstandingWaits() []WaitRequest {
+	j.waitsMu.Lock()
+	defer j.waitsMu.Unlock()
+	out := make([]WaitRequest, len(j.waits))
+	copy(out, j.waits)
+	return out
+}
+
 // executeCall runs one logical node activation under §7.3: bound-check,
 // permit, commit-before-effect, per-attempt invoke, commit-before-
 // propagation, bounded retry and typed fallback (§5.5).
 func (j *runJournal) executeCall(ctx context.Context, exec NodeExecutor,
 	c einoruntime.Call) (json.RawMessage, error) {
+	// The suspension flag closes the effect gate before any
+	// accounting: no new effect starts, no activation is spent, no
+	// attempt is committed once a wait exists (§8.3 step 2).
+	if j.suspending.Load() {
+		return nil, &einoruntime.GateSuspend{Path: c.Path}
+	}
 	if j.inLimit > 0 && int64(len(c.Input)) > j.inLimit {
 		return nil, &Error{Code: ErrBudgetExceeded, Path: c.Path,
 			Message: "node input exceeds max_node_input_bytes"}
@@ -146,6 +205,7 @@ func (j *runJournal) executeCall(ctx context.Context, exec NodeExecutor,
 		if attempt == 1 {
 			events = append([]Event{{Kind: EventNodeStarted, Path: c.Path}}, events...)
 		}
+		j.attempts.Add(1)
 		if err := j.commit(ctx, c.Path, attempt,
 			StateTransition{Expected: RunRunning, Target: RunRunning}, events, nil); err != nil {
 			// No effect may be invoked when the start record fails.
@@ -170,6 +230,7 @@ func (j *runJournal) executeCall(ctx context.Context, exec NodeExecutor,
 			Input:            c.Input,
 			OperationKey:     opKey,
 			Attempt:          attempt,
+			Continuation:     c.ResumeAnswer,
 		})
 		if cancel != nil {
 			cancel()
@@ -180,8 +241,36 @@ func (j *runJournal) executeCall(ctx context.Context, exec NodeExecutor,
 				break
 			}
 			if reply.Wait != nil {
-				return nil, &Error{Code: ErrUnsupportedFeature, Path: c.Path,
-					Message: "wait replies are a S06 contract"}
+				if !c.SupportsWait {
+					lastErr = &Error{Code: ErrAuthorityDenied, Path: c.Path,
+						Message: "node type does not declare supports_wait"}
+					break
+				}
+				wr := reply.Wait
+				data, merr := json.Marshal(wr)
+				if merr != nil {
+					lastErr = &Error{Code: ErrInvalidDefinition, Path: c.Path, Err: merr}
+					break
+				}
+				// The wait prompt is durable metadata before the
+				// interrupt exists; the gate closes first so no
+				// further effect can start in this run (§8.3).
+				j.suspending.Store(true)
+				if err := j.commit(ctx, c.Path, attempt,
+					StateTransition{Expected: RunRunning, Target: RunRunning},
+					[]Event{{Kind: EventNodeWait, Path: c.Path, Attempt: attempt,
+						Data: data}}, nil); err != nil {
+					j.recovery.Store(true)
+					return nil, err
+				}
+				j.waitsMu.Lock()
+				j.waits = append(j.waits, *wr)
+				j.waitsMu.Unlock()
+				j.attempts.Add(1)
+				return nil, &einoruntime.SuspendRequest{
+					RequestID:       wr.RequestID,
+					ContinuationRef: wr.ContinuationRef,
+				}
 			}
 			out := reply.Output
 			if j.outLimit > 0 && int64(len(out)) > j.outLimit {

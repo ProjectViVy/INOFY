@@ -61,7 +61,7 @@ func runDoc(t *testing.T, doc map[string]any, input json.RawMessage, exec einoru
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	out, diags, err := prog.Invoke(context.Background(), input, exec)
+	out, diags, err := invoke3(prog, context.Background(), input, exec)
 	var skipped []string
 	for _, d := range diags {
 		if d.Code == "node_skipped" {

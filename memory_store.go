@@ -21,13 +21,16 @@ type MemoryRunStore struct {
 }
 
 type memRun struct {
-	ref        ExecutionRef
-	status     RunStatus
-	commits    map[string]memCommit
-	unresolved map[string]OperationRef
-	events     []Event
-	results    int
-	usage      Usage
+	ref         ExecutionRef
+	status      RunStatus
+	commits     map[string]memCommit
+	unresolved  map[string]OperationRef
+	events      []Event
+	results     int
+	usage       Usage
+	limits      Limits
+	inputDigest string
+	checkpoint  *CheckpointEnvelope
 }
 
 type memCommit struct {
@@ -90,12 +93,27 @@ func (m *MemoryRunStore) Commit(ctx context.Context, ref ExecutionRef, change Ru
 		}
 	}
 	run.status = change.Transition.Target
+	if change.Checkpoint != nil {
+		cp := *change.Checkpoint
+		cp.Payload = append([]byte(nil), change.Checkpoint.Payload...)
+		run.checkpoint = &cp
+	}
 	for _, ev := range change.Events {
 		evCopy := ev
 		if len(evCopy.Data) > 0 {
 			evCopy.Data = append([]byte(nil), evCopy.Data...)
 		}
 		run.events = append(run.events, evCopy)
+		if ev.Kind == EventRunAdmitted && len(ev.Data) > 0 {
+			var meta struct {
+				InputDigest string `json:"input_digest"`
+				Limits      Limits `json:"limits"`
+			}
+			if json.Unmarshal(ev.Data, &meta) == nil {
+				run.inputDigest = meta.InputDigest
+				run.limits = meta.Limits
+			}
+		}
 		key := opKeyFor(ev)
 		switch ev.Kind {
 		case EventNodeAttempt:
@@ -143,10 +161,19 @@ func (m *MemoryRunStore) Load(ctx context.Context, runID string) (RecoveryState,
 		ops = append(ops, op)
 	}
 	sort.Slice(ops, func(i, j int) bool { return ops[i].OperationKey < ops[j].OperationKey })
+	var cp *CheckpointEnvelope
+	if run.checkpoint != nil {
+		v := *run.checkpoint
+		v.Payload = append([]byte(nil), run.checkpoint.Payload...)
+		cp = &v
+	}
 	return RecoveryState{
 		Ref:                  run.ref,
 		Status:               run.status,
+		InputDigest:          run.inputDigest,
+		Limits:               run.limits,
 		Usage:                run.usage,
+		LatestCheckpoint:     cp,
 		UnresolvedOperations: ops,
 	}, nil
 }

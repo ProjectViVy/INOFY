@@ -7,6 +7,7 @@ package einoruntime
 
 import (
 	"context"
+	"errors"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -52,6 +53,10 @@ type Call struct {
 	TimeoutMS        int64
 	OnError          json.RawMessage
 	OutputSchema     json.RawMessage
+	SupportsWait     bool
+	// ResumeAnswer carries the authorized answer for a resumed wait;
+	// it is forwarded to the host as NodeCall.Continuation.
+	ResumeAnswer json.RawMessage
 }
 
 // Executor is the host's node invocation surface (a function value so
@@ -63,12 +68,33 @@ type Executor func(ctx context.Context, call Call) (json.RawMessage, error)
 // immutable and safe for concurrent Invoke calls.
 type Program struct {
 	runnable      compose.Runnable[map[string]any, map[string]any]
+	staging       *StagingStore
 	outputs       map[string]map[string]any
 	outputsSchema json.RawMessage
 	nodes         map[string]map[string]any
 	regions       map[string]map[string]map[string]bool
 	limits        Limits
 }
+
+// RunOptions carries per-invocation suspension plumbing: the run's
+// checkpoint ID, its closed-effect gate and — on resume — the
+// authorized answers keyed by root-cause interrupt ID.
+type RunOptions struct {
+	CheckPointID string
+	Gate         *atomic.Bool
+	ResumeData   map[string]any
+}
+
+// InvokeResult reports one invocation: either resolved outputs plus
+// diagnostics, or a Suspend view of the quiescent interruption.
+type InvokeResult struct {
+	Output  json.RawMessage
+	Diags   []definition.Finding
+	Suspend *SuspendView
+}
+
+// Staging exposes the program's per-invocation checkpoint buffer.
+func (p *Program) Staging() *StagingStore { return p.staging }
 
 // runState is injected through the invoke context and mutable per run.
 type runState struct {
@@ -77,6 +103,7 @@ type runState struct {
 	actLimit int
 	timeout  time.Duration
 	attempts int
+	gate     *atomic.Bool
 	mu       sync.Mutex
 	decision map[string]string // switch node ID → chosen port
 	executed map[string]bool   // node IDs that acquired an activation
@@ -113,12 +140,14 @@ func CompileProgram(ctx context.Context, defDoc map[string]any, types map[string
 	if err != nil {
 		return nil, err
 	}
-	runnable, err := wf.Compile(ctx)
+	staging := NewStagingStore()
+	runnable, err := wf.Compile(ctx, compose.WithCheckPointStore(staging))
 	if err != nil {
 		return nil, &Error{Code: ErrInvalidDefinition, Err: err, Message: "eino workflow compile"}
 	}
 	return &Program{
 		runnable:      runnable,
+		staging:       staging,
 		outputs:       outputs,
 		outputsSchema: outputsSchema,
 		nodes:         nodes,
@@ -129,31 +158,58 @@ func CompileProgram(ctx context.Context, defDoc map[string]any, types map[string
 
 // Invoke runs the compiled workflow once. It returns the resolved,
 // schema-checked outputs object, run diagnostics, and the first hard
-// error. Nodes the branch decisions did not activate are reported as
-// skipped diagnostics after settlement.
-func (p *Program) Invoke(ctx context.Context, input json.RawMessage, exec Executor) (json.RawMessage, []definition.Finding, error) {
-	in, err := decodeJSON(input)
-	if err != nil {
-		return nil, nil, &Error{Code: ErrInvalidDefinition, Err: err, Message: "run input is not valid JSON"}
+// error — or a Suspend view when the graph interrupted quiescently.
+// Nodes the branch decisions did not activate are reported as skipped
+// diagnostics after settlement.
+func (p *Program) Invoke(ctx context.Context, input json.RawMessage, exec Executor, opts RunOptions) (InvokeResult, error) {
+	if len(opts.ResumeData) > 0 {
+		ctx = compose.BatchResumeWithData(ctx, opts.ResumeData)
 	}
 	rs := &runState{
 		exec:     exec,
 		actLimit: p.limits.MaxActivations,
 		timeout:  time.Duration(p.limits.NodeTimeoutMS) * time.Millisecond,
 		attempts: p.limits.MaxAttemptsPerCall,
+		gate:     opts.Gate,
 		decision: map[string]string{},
 		executed: map[string]bool{},
 	}
 	ctx = context.WithValue(ctx, runStateKey{}, rs)
-	end, err := p.runnable.Invoke(ctx, map[string]any{"input": packetOf(in)})
-	if err != nil {
-		return nil, nil, err
+	var invokeOpts []compose.Option
+	if opts.CheckPointID != "" {
+		invokeOpts = append(invokeOpts, compose.WithCheckPointID(opts.CheckPointID))
 	}
-	out, diags, err := p.settle(end, rs, in)
-	if err != nil {
-		return nil, diags, err
+	var end map[string]any
+	var err error
+	if len(opts.ResumeData) > 0 {
+		end, err = p.runnable.Invoke(ctx, nil, invokeOpts...)
+	} else {
+		in, derr := decodeJSON(input)
+		if derr != nil {
+			return InvokeResult{}, &Error{Code: ErrInvalidDefinition, Err: derr, Message: "run input is not valid JSON"}
+		}
+		end, err = p.runnable.Invoke(ctx, map[string]any{"input": packetOf(in)}, invokeOpts...)
+		if err == nil {
+			out, diags, serr := p.settle(end, rs, in)
+			if serr != nil {
+				return InvokeResult{Diags: diags}, serr
+			}
+			return InvokeResult{Output: out, Diags: diags}, nil
+		}
 	}
-	return out, diags, nil
+	if err != nil {
+		if sv := extractSuspension(err); sv != nil {
+			return InvokeResult{Suspend: sv}, nil
+		}
+		return InvokeResult{}, err
+	}
+	// Resume flow: no run-input decode is needed; outputs settle the
+	// same way with a nil root input view.
+	out, diags, serr := p.settle(end, rs, nil)
+	if serr != nil {
+		return InvokeResult{Diags: diags}, serr
+	}
+	return InvokeResult{Output: out, Diags: diags}, nil
 }
 
 // settle maps END packets to declared outputs, marks skipped nodes,
@@ -329,6 +385,30 @@ func (b *scopeBuilder) callLambda(id, path string, n map[string]any) (*compose.L
 			return nil, &Error{Code: ErrInvalidDefinition, Path: path, Message: "no run state"}
 		}
 		path := runtimePath(in, path, id)
+		// Resume handling (§8.4): an answered wait is re-entered with
+		// its authorized data; an interrupted node re-run without data
+		// must re-interrupt, never silently re-execute the effect.
+		var resumeAnswer json.RawMessage
+		isResume, hasData, data := compose.GetResumeContext[any](ctx)
+		if wasInterrupted, _, _ := compose.GetInterruptState[any](ctx); wasInterrupted && !isResume {
+			return nil, compose.StatefulInterrupt(ctx,
+				map[string]any{"kind": InterruptGate, "ref": path},
+				map[string]any{"armed": true})
+		}
+		if isResume && hasData {
+			raw, merr := json.Marshal(data)
+			if merr != nil {
+				return nil, &Error{Code: ErrInvalidDefinition, Path: path, Err: merr}
+			}
+			resumeAnswer = raw
+		}
+		// The suspension flag closes the leaf effect gate: nothing new
+		// starts once a wait committed (§8.3 step 2).
+		if rs.gate != nil && rs.gate.Load() {
+			return nil, compose.StatefulInterrupt(ctx,
+				map[string]any{"kind": InterruptGate, "ref": path},
+				map[string]any{"armed": true})
+		}
 		if err := rs.acquire(path); err != nil {
 			return nil, err
 		}
@@ -369,8 +449,22 @@ func (b *scopeBuilder) callLambda(id, path string, n map[string]any) (*compose.L
 			TimeoutMS:        firstPos64(int64(nodeTimeoutMS), rs.timeout.Milliseconds(), 0),
 			OnError:          onErr,
 			OutputSchema:     t.OutputSchema,
+			SupportsWait:     t.SupportsWait,
+			ResumeAnswer:     resumeAnswer,
 		})
 		if err != nil {
+			var w *SuspendRequest
+			if errors.As(err, &w) {
+				return nil, compose.StatefulInterrupt(ctx,
+					map[string]any{"kind": InterruptWait, "ref": w.RequestID},
+					map[string]any{"armed": true})
+			}
+			var g *GateSuspend
+			if errors.As(err, &g) {
+				return nil, compose.StatefulInterrupt(ctx,
+					map[string]any{"kind": InterruptGate, "ref": g.Path},
+					map[string]any{"armed": true})
+			}
 			return nil, err
 		}
 		decoded, err := decodeJSON(out)

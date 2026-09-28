@@ -2,8 +2,12 @@ package inofy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 
+	"github.com/ProjectViVy/inofy/internal/definition"
 	"github.com/ProjectViVy/inofy/internal/einoruntime"
 )
 
@@ -43,11 +47,7 @@ func (p *Program) Run(ctx context.Context, request RunRequest, bindings Bindings
 		}
 	}
 	if request.Resume != nil {
-		return RunResult{Status: RunFailed}, &Error{
-			Code:    ErrUnsupportedFeature,
-			Path:    request.Ref.RunID,
-			Message: "resume is a S06 contract",
-		}
+		return p.resume(ctx, request, bindings)
 	}
 	if bindings.Nodes == nil {
 		return RunResult{Status: RunFailed}, &Error{
@@ -67,9 +67,15 @@ func (p *Program) Run(ctx context.Context, request RunRequest, bindings Bindings
 	j := newRunJournal(request.Ref, bindings.Runs, lim)
 	// Admission and start are visible transitions, never silent
 	// progress (§8.1): a failed admission commit cannot start work.
+	// The admitted input digest and effective limits ride in the
+	// admission event so resume can re-verify both (§8.4).
+	admitData, _ := json.Marshal(map[string]any{
+		"input_digest": inputDigest(request.Input),
+		"limits":       lim,
+	})
 	if err := j.commit(ctx, request.Ref.RunID, 0,
 		StateTransition{Expected: "", Target: RunAdmitted},
-		[]Event{{Kind: EventRunAdmitted}}, nil); err != nil {
+		[]Event{{Kind: EventRunAdmitted, Data: admitData}}, nil); err != nil {
 		return RunResult{Status: RunFailed}, err
 	}
 	if err := j.commit(ctx, request.Ref.RunID, 0,
@@ -78,10 +84,19 @@ func (p *Program) Run(ctx context.Context, request RunRequest, bindings Bindings
 		return RunResult{Status: RunFailed}, err
 	}
 	exec := executorAdapter(j, bindings.Nodes)
-	out, diags, err := p.rt.Invoke(ctx, request.Input, exec)
+	res, err := p.rt.Invoke(ctx, request.Input, exec,
+		einoruntime.RunOptions{
+			CheckPointID: request.Ref.RunID + "/0",
+			Gate:         &j.suspending,
+		})
 	status := RunSucceeded
 	var runErr error
+	var diags []definition.Finding
+	out := res.Output
+	diags = res.Diags
 	switch {
+	case res.Suspend != nil:
+		return p.suspend(ctx, request, j, res)
 	case j.recovery.Load() || j.unknown.Load():
 		status = RunRecoveryRequired
 		runErr = err
@@ -104,6 +119,70 @@ func (p *Program) Run(ctx context.Context, request RunRequest, bindings Bindings
 		Outputs:     out,
 		Diagnostics: toDiagnostics(diags),
 	}, adaptError(runErr)
+}
+
+// suspend settles a quiescent run: the staged checkpoint bytes plus
+// the outstanding waits and resume addresses are committed as one
+// atomic boundary (§8.3 step 4). The commit makes the run waiting; a
+// failed commit leaves it running for reconciliation.
+func (p *Program) suspend(ctx context.Context, request RunRequest,
+	j *runJournal, res einoruntime.InvokeResult) (RunResult, error) {
+	cpID := request.Ref.RunID + "/" + itoa(j.gen)
+	payload := p.rt.Staging().Staged(cpID)
+	waits := j.outstandingWaits()
+	// Resume addresses are durable metadata: each wait's request ID
+	// binds to the Eino interrupt ID that BatchResumeWithData answers.
+	interrupts := map[string]string{}
+	gates := []string{}
+	for _, pt := range res.Suspend.Points {
+		switch pt.Kind {
+		case einoruntime.InterruptWait:
+			interrupts[pt.Ref] = pt.ID
+		default:
+			gates = append(gates, pt.ID)
+		}
+	}
+	// A wait that never surfaced as a root-cause interrupt means the
+	// suspension did not quiesce; nothing may commit waiting.
+	if len(interrupts) != len(waits) {
+		return RunResult{Status: RunRecoveryRequired}, &Error{
+			Code:    ErrOutcomeUnknown,
+			Path:    request.Ref.RunID,
+			Message: "suspension did not quiesce: waits lack interrupt addresses",
+		}
+	}
+	data, err := json.Marshal(map[string]any{
+		"waits":      waits,
+		"interrupts": interrupts,
+		"gates":      gates,
+	})
+	if err != nil {
+		return RunResult{Status: RunFailed}, &Error{Code: ErrInvalidDefinition, Err: err}
+	}
+	env := &CheckpointEnvelope{
+		ContinuationGeneration: j.gen,
+		DefinitionDigest:       p.meta.DefinitionDigest,
+		ProgramDigest:          p.meta.ProgramDigest,
+		EinoBuild:              p.meta.EinoBuild,
+		SerializerVersion:      serializerVersion,
+		InputDigest:            inputDigest(request.Input),
+		Usage:                  j.usage(),
+		EventBoundary:          j.ord.Load(),
+		Payload:                payload,
+		Checksum:               payloadChecksum(payload),
+	}
+	j.clock.Pause()
+	if err := j.commitEnvelope(ctx,
+		StateTransition{Expected: RunRunning, Target: RunWaiting},
+		[]Event{{Kind: EventRunWaiting, Data: data}}, env); err != nil {
+		// The run is still running in the store: reconciliation
+		// territory, never a durable wait (§8.3 step 4).
+		return RunResult{Status: RunRecoveryRequired}, err
+	}
+	return RunResult{
+		Status: RunWaiting,
+		Waits:  waits,
+	}, nil
 }
 
 func terminalEvent(s RunStatus) EventKind {
@@ -156,4 +235,38 @@ type limitError struct {
 
 func (e *limitError) Error() string {
 	return "run limit " + e.name + " exceeds the compiled ceiling"
+}
+
+const serializerVersion = "inofy-eino-checkpoint-v1"
+
+func itoa(i int) string {
+	return fmt.Sprintf("%d", i)
+}
+
+// inputDigest is the canonical digest of the admitted run input.
+func inputDigest(input json.RawMessage) string {
+	var doc any
+	if err := json.Unmarshal(input, &doc); err != nil {
+		return ""
+	}
+	norm, err := definition.Canonical(doc)
+	if err != nil {
+		return ""
+	}
+	return definition.DigestBytes(norm)
+}
+
+func payloadChecksum(b []byte) string {
+	sum := sha256.Sum256(b)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// resume is the authorized continuation path (§8.4): Task 2 wires
+// identity checks, claim CAS and addressed answers.
+func (p *Program) resume(ctx context.Context, request RunRequest, bindings Bindings) (RunResult, error) {
+	return RunResult{Status: RunFailed}, &Error{
+		Code:    ErrUnsupportedFeature,
+		Path:    request.Ref.RunID,
+		Message: "resume claim path lands in S06 task 2",
+	}
 }

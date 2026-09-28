@@ -115,7 +115,7 @@ func TestProgramDAG(t *testing.T) {
 		if err != nil {
 			t.Fatalf("compile: %v", err)
 		}
-		out, _, err := prog.Invoke(ctx, json.RawMessage(`{"q":"hi"}`), exec.execute)
+		out, _, err := invoke3(prog, ctx, json.RawMessage(`{"q":"hi"}`), exec.execute)
 		if err != nil {
 			t.Fatalf("invoke: %v", err)
 		}
@@ -168,7 +168,7 @@ func TestProgramDAG(t *testing.T) {
 		if err != nil {
 			t.Fatalf("compile: %v", err)
 		}
-		if _, _, err := prog.Invoke(ctx, json.RawMessage(`{}`), execCap); err != nil {
+		if _, _, err := invoke3(prog, ctx, json.RawMessage(`{}`), execCap); err != nil {
 			t.Fatalf("invoke: %v", err)
 		}
 		if seen["va"] != float64(3) || seen["vb"] != float64(4) {
@@ -197,7 +197,7 @@ func TestProgramDAG(t *testing.T) {
 		if err != nil {
 			t.Fatalf("compile: %v", err)
 		}
-		_, _, err = prog.Invoke(ctx, json.RawMessage(`{}`), exec.execute)
+		_, _, err = invoke3(prog, ctx, json.RawMessage(`{}`), exec.execute)
 		var ie *einoruntime.Error
 		if !errors.As(err, &ie) || ie.Code != einoruntime.ErrBindingMissing {
 			t.Fatalf("want binding_missing, got %v", err)
@@ -226,7 +226,7 @@ func TestProgramDAG(t *testing.T) {
 		if err != nil {
 			t.Fatalf("compile: %v", err)
 		}
-		if _, _, err := prog.Invoke(ctx, json.RawMessage(`{}`), exec.execute); err != nil {
+		if _, _, err := invoke3(prog, ctx, json.RawMessage(`{}`), exec.execute); err != nil {
 			t.Fatalf("invoke: %v", err)
 		}
 		if !exec.called("fx") {
@@ -268,7 +268,7 @@ func TestProgramDAG(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			var out json.RawMessage
-			out, _, errA = prog.Invoke(ctx, json.RawMessage(`{"q":"A"}`), exec)
+			out, _, errA = invoke3(prog, ctx, json.RawMessage(`{"q":"A"}`), exec)
 			if errA == nil {
 				var m map[string]any
 				_ = json.Unmarshal(out, &m)
@@ -278,7 +278,7 @@ func TestProgramDAG(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			var out json.RawMessage
-			out, _, errB = prog.Invoke(ctx, json.RawMessage(`{"q":"B"}`), exec)
+			out, _, errB = invoke3(prog, ctx, json.RawMessage(`{"q":"B"}`), exec)
 			if errB == nil {
 				var m map[string]any
 				_ = json.Unmarshal(out, &m)
