@@ -36,7 +36,7 @@ An edge names an **immediate** required accepted output; file conflicts are belo
 | S08 | [App SQLite authority and dispatcher](S08.md) | S06: recovery contract; S07: version repository | Done | SQLite authority + bounded dispatch + restart classification; ledger `.superpowers/sdd/S08/progress.md`. |
 | S09 | [App auth, HTTP and catalog](S09.md) | S08: durable App admission; S07: publication API | Done | Auth/session+CSRF guards, §11.4 endpoints, committed SSE, governed nodes + OpenAI-compatible binding; ledger `.superpowers/sdd/S09/progress.md`. |
 | S10 | [Reusable visual editor](S10.md) | S02: schema/fixtures; S09: App transport; S11: ViVy RPC/event contract | Done | Studio transport-first editor + App adapter real, ViVy adapter is S11 seam; G10 browser E2E deferred to S13; ledger `.superpowers/sdd/S10/progress.md`. |
-| S11 | [ViVy adapter and host surface](S11.md) | S06: lifecycle; S07: reusable definitions | Blocked | Prove Journal/checkpoint atomic manifest and native constraints. |
+| S11 | [ViVy adapter and host surface](S11.md) | S06: lifecycle; S07: reusable definitions | Blocked | Readiness PROVEN read-only on 83d66105 (blob→journal manifest atomicity maps; CommitID/epoch gap listed); executable tasks need ViVy edits — blocked on host-write permission; ledger `.superpowers/sdd/S11/progress.md`. |
 | S12 | [Garden Fast/Deep adapters](S12.md) | S04: repeat; S05: bounded execution; S06: host recovery | Blocked | Extract behavior from live recall services, not dormant pipeline. |
 | S13 | [Package and end-to-end acceptance](S13.md) | S09: App; S10: editor; S11: ViVy; S12: Garden | Planned | All G1–G11 required; no passing evidence yet. |
 
