@@ -105,18 +105,6 @@ func CompileProgram(ctx context.Context, defDoc map[string]any, types map[string
 	if err != nil {
 		return nil, err
 	}
-	exits, _ := graph["exits"].([]any)
-	if len(exits) == 0 {
-		return nil, &Error{Code: ErrInvalidDefinition, Message: "graph declares no exits"}
-	}
-	for _, e := range exits {
-		id, _ := e.(string)
-		if _, ok := nodes[id]; !ok {
-			return nil, &Error{Code: ErrInvalidDefinition,
-				Message: fmt.Sprintf("exit %q is not a node", id)}
-		}
-		wf.End().AddInput(id, compose.ToField(id))
-	}
 	runnable, err := wf.Compile(ctx)
 	if err != nil {
 		return nil, &Error{Code: ErrInvalidDefinition, Err: err, Message: "eino workflow compile"}
@@ -210,7 +198,8 @@ func (rs *runState) recordDecision(switchID, port string) {
 
 // scopeBuilder holds compile-time state for one graph scope.
 type scopeBuilder struct {
-	types map[string]TypeInfo
+	types          map[string]TypeInfo
+	containerDepth int
 }
 
 // buildScope wires every node and edge of a scope into an Eino
@@ -225,11 +214,20 @@ func (b *scopeBuilder) buildScope(g map[string]any, path string) (*compose.Workf
 		n := nodes[id]
 		kind, _ := n["kind"].(string)
 		nodePath := path + "/nodes/" + id
-		lam, err := b.nodeLambda(id, nodePath, n)
-		if err != nil {
-			return nil, nil, err
+		var nn *compose.WorkflowNode
+		if kind == "repeat" {
+			sub, err := b.buildRepeat(id, nodePath, n)
+			if err != nil {
+				return nil, nil, err
+			}
+			nn = wf.AddGraphNode(id, sub)
+		} else {
+			lam, err := b.nodeLambda(id, nodePath, n)
+			if err != nil {
+				return nil, nil, err
+			}
+			nn = wf.AddLambdaNode(id, lam)
 		}
-		nn := wf.AddLambdaNode(id, lam)
 		if kind == "select" {
 			if err := b.wireSelect(nn, n, nodePath); err != nil {
 				return nil, nil, err
@@ -262,6 +260,20 @@ func (b *scopeBuilder) buildScope(g map[string]any, path string) (*compose.Workf
 			}, endSet)
 		wf.AddBranch(id, branch)
 	}
+
+	exits, _ := g["exits"].([]any)
+	if len(exits) == 0 {
+		return nil, nil, &Error{Code: ErrInvalidDefinition, Path: path,
+			Message: "scope declares no exits"}
+	}
+	for _, e := range exits {
+		exitID, _ := e.(string)
+		if _, ok := nodes[exitID]; !ok {
+			return nil, nil, &Error{Code: ErrInvalidDefinition, Path: path,
+				Message: fmt.Sprintf("exit %q is not a node", exitID)}
+		}
+		wf.End().AddInput(exitID, compose.ToField(exitID))
+	}
 	return wf, nodes, nil
 }
 
@@ -275,9 +287,6 @@ func (b *scopeBuilder) nodeLambda(id, path string, n map[string]any) (*compose.L
 		return b.switchLambda(id, path, n)
 	case "select":
 		return b.selectLambda(id, path, n)
-	case "repeat":
-		return nil, &Error{Code: ErrUnsupportedFeature, Path: path,
-			Message: "repeat nodes compile in S04"}
 	}
 	return nil, &Error{Code: ErrInvalidDefinition, Path: path,
 		Message: "unknown node kind " + kind}
@@ -301,7 +310,7 @@ func (b *scopeBuilder) callLambda(id, path string, n map[string]any) (*compose.L
 		}
 		cfg = raw
 	}
-	nodeTimeout, _ := n["timeout_ms"].(json.Number)
+	nodeTimeoutMS := asIntField(n["timeout_ms"])
 	retry := retryPolicy(n)
 	onError, hasOnError := n["on_error"].(map[string]any)
 
@@ -310,6 +319,7 @@ func (b *scopeBuilder) callLambda(id, path string, n map[string]any) (*compose.L
 		if rs == nil {
 			return nil, &Error{Code: ErrInvalidDefinition, Path: path, Message: "no run state"}
 		}
+		path := runtimePath(in, path, id)
 		if err := rs.acquire(path); err != nil {
 			return nil, err
 		}
@@ -328,10 +338,8 @@ func (b *scopeBuilder) callLambda(id, path string, n map[string]any) (*compose.L
 			return nil, &Error{Code: ErrInvalidDefinition, Path: path, Err: err}
 		}
 		timeout := rs.timeout
-		if nodeTimeout != "" {
-			if ms, err := nodeTimeout.Int64(); err == nil && ms > 0 {
-				timeout = time.Duration(ms) * time.Millisecond
-			}
+		if nodeTimeoutMS > 0 {
+			timeout = time.Duration(nodeTimeoutMS) * time.Millisecond
 		}
 		attempts := retry.maxAttempts
 		if attempts <= 0 {
@@ -405,6 +413,7 @@ func (b *scopeBuilder) switchLambda(id, path string, n map[string]any) (*compose
 	defPort, _ := n["default_port"].(string)
 	return compose.InvokableLambda(func(ctx context.Context, in map[string]any) (map[string]any, error) {
 		rs, _ := ctx.Value(runStateKey{}).(*runState)
+		path := runtimePath(in, path, id)
 		if rs != nil {
 			if err := rs.acquire(path); err != nil {
 				return nil, err
@@ -463,6 +472,7 @@ func (b *scopeBuilder) selectLambda(id, path string, n map[string]any) (*compose
 	}
 	return compose.InvokableLambda(func(ctx context.Context, in map[string]any) (map[string]any, error) {
 		rs, _ := ctx.Value(runStateKey{}).(*runState)
+		path := runtimePath(in, path, id)
 		if rs != nil {
 			if err := rs.acquire(path); err != nil {
 				return nil, err
@@ -686,16 +696,10 @@ type retryCfg struct {
 
 func retryPolicy(n map[string]any) retryCfg {
 	r, _ := n["retry"].(map[string]any)
-	var out retryCfg
-	if v, ok := r["max_attempts"].(json.Number); ok {
-		i, _ := v.Int64()
-		out.maxAttempts = int(i)
+	return retryCfg{
+		maxAttempts: asIntField(r["max_attempts"]),
+		delayMS:     int64(asIntField(r["delay_ms"])),
 	}
-	if v, ok := r["delay_ms"].(json.Number); ok {
-		i, _ := v.Int64()
-		out.delayMS = i
-	}
-	return out
 }
 
 func isDeadline(err error) bool {

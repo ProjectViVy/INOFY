@@ -46,6 +46,7 @@ const (
 	ErrInvalidDefinition   ErrorCode = "invalid_definition"
 	ErrSelectZeroCandidate ErrorCode = "select_zero_candidate"
 	ErrSelectAmbiguous     ErrorCode = "select_ambiguous"
+	ErrIterationLimit      ErrorCode = "iteration_limit"
 )
 
 const packetOutKey = "out"

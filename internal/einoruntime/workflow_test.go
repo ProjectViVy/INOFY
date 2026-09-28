@@ -294,7 +294,7 @@ func TestProgramDAG(t *testing.T) {
 		}
 	})
 
-	t.Run("repeat compiles unsupported for S03", func(t *testing.T) {
+	t.Run("nested repeat beyond one level rejected", func(t *testing.T) {
 		doc := map[string]any{
 			"schema_version": "inofy.workflow/v1",
 			"graph": map[string]any{
@@ -304,9 +304,22 @@ func TestProgramDAG(t *testing.T) {
 						"initial":      map[string]any{"acc": map[string]any{"literal": 0}},
 						"state_schema": map[string]any{"type": "object"},
 						"body": map[string]any{
-							"nodes": []any{callNodeT("s", "t@1", nil)},
+							"nodes": []any{
+								map[string]any{
+									"id": "rep2", "kind": "repeat",
+									"initial":      map[string]any{"x": map[string]any{"literal": 0}},
+									"state_schema": map[string]any{"type": "object"},
+									"body": map[string]any{
+										"nodes": []any{callNodeT("s", "t@1", nil)},
+										"edges": []any{},
+										"exits": []any{"s"},
+									},
+									"max_iterations": 2,
+									"until":          map[string]any{"op": "exists", "pointer": "/x"},
+								},
+							},
 							"edges": []any{},
-							"exits": []any{"s"},
+							"exits": []any{"rep2"},
 						},
 						"max_iterations": 2,
 						"until":          map[string]any{"op": "exists", "pointer": "/acc"},
@@ -318,8 +331,8 @@ func TestProgramDAG(t *testing.T) {
 		}
 		_, err := einoruntime.CompileProgram(ctx, doc, types, einoruntime.Limits{MaxActivations: 256})
 		var ie *einoruntime.Error
-		if !errors.As(err, &ie) || ie.Code != einoruntime.ErrUnsupportedFeature {
-			t.Fatalf("want unsupported_feature for repeat, got %v", err)
+		if !errors.As(err, &ie) || ie.Code != einoruntime.ErrInvalidDefinition {
+			t.Fatalf("want invalid_definition for nested repeat, got %v", err)
 		}
 	})
 }
