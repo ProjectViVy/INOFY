@@ -36,7 +36,9 @@ type Limits struct {
 	NodeTimeoutMS      int64
 }
 
-// Call is one executor invocation for one node activation.
+// Call is one executor invocation for one node activation. Retry,
+// timeout and fallback metadata are resolved here; the run-scoped
+// boundary owns attempt counting and commit ordering.
 type Call struct {
 	Path             string
 	TypeID           string
@@ -44,6 +46,12 @@ type Call struct {
 	Config           json.RawMessage
 	Input            json.RawMessage
 	Attempt          int
+	Replay           string
+	MaxAttempts      int
+	DelayMS          int64
+	TimeoutMS        int64
+	OnError          json.RawMessage
+	OutputSchema     json.RawMessage
 }
 
 // Executor is the host's node invocation surface (a function value so
@@ -337,71 +345,45 @@ func (b *scopeBuilder) callLambda(id, path string, n map[string]any) (*compose.L
 		if err != nil {
 			return nil, &Error{Code: ErrInvalidDefinition, Path: path, Err: err}
 		}
-		timeout := rs.timeout
-		if nodeTimeoutMS > 0 {
-			timeout = time.Duration(nodeTimeoutMS) * time.Millisecond
-		}
-		attempts := retry.maxAttempts
-		if attempts <= 0 {
-			attempts = rs.attempts
-		}
-		if attempts <= 0 {
-			attempts = 1
-		}
-		var lastErr error
-		for attempt := 1; attempt <= attempts; attempt++ {
-			callCtx := ctx
-			var cancel context.CancelFunc
-			if timeout > 0 {
-				callCtx, cancel = context.WithTimeout(ctx, timeout)
-			}
-			out, callErr := rs.exec(callCtx, Call{
-				Path:             path,
-				TypeID:           typ,
-				ImplementationID: t.ImplementationID,
-				Config:           cfg,
-				Input:            inputRaw,
-				Attempt:          attempt,
-			})
-			if cancel != nil {
-				cancel()
-			}
-			if callErr == nil {
-				decoded, err := decodeJSON(out)
-				if err != nil {
-					lastErr = &Error{Code: ErrSchemaMismatch, Path: path, Err: err,
-						Message: "node output is not valid JSON"}
-					break
-				}
-				if len(t.OutputSchema) > 0 {
-					if err := definition.ValidateValueJSON(t.OutputSchema, decoded); err != nil {
-						lastErr = &Error{Code: ErrSchemaMismatch, Path: path,
-							Err: err, Message: "node output violates type output_schema"}
-						break
-					}
-				}
-				return packetOf(decoded), nil
-			}
-			lastErr = callErr
-			if attempt < attempts && retry.delayMS > 0 {
-				select {
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				case <-time.After(time.Duration(retry.delayMS) * time.Millisecond):
-				}
-			}
-		}
+		var onErr json.RawMessage
 		if hasOnError {
 			if lit, ok := onError["literal"]; ok {
-				return packetOf(lit), nil
+				raw, merr := json.Marshal(lit)
+				if merr != nil {
+					return nil, &Error{Code: ErrInvalidDefinition, Path: path,
+						Err: merr, Message: "on_error literal is not JSON"}
+				}
+				onErr = raw
 			}
 		}
-		if isDeadline(lastErr) {
-			return nil, &Error{Code: ErrDeadlineExceeded, Path: path, Err: lastErr,
-				Message: "node timed out"}
+		out, err := rs.exec(ctx, Call{
+			Path:             path,
+			TypeID:           typ,
+			ImplementationID: t.ImplementationID,
+			Config:           cfg,
+			Input:            inputRaw,
+			Replay:           t.Replay,
+			MaxAttempts:      firstPos(retry.maxAttempts, rs.attempts, 1),
+			DelayMS:          retry.delayMS,
+			TimeoutMS:        firstPos64(int64(nodeTimeoutMS), rs.timeout.Milliseconds(), 0),
+			OnError:          onErr,
+			OutputSchema:     t.OutputSchema,
+		})
+		if err != nil {
+			return nil, err
 		}
-		return nil, &Error{Code: ErrNodeFailed, Path: path, Err: lastErr,
-			Message: "node execution failed"}
+		decoded, err := decodeJSON(out)
+		if err != nil {
+			return nil, &Error{Code: ErrSchemaMismatch, Path: path, Err: err,
+				Message: "node output is not valid JSON"}
+		}
+		if len(t.OutputSchema) > 0 {
+			if err := definition.ValidateValueJSON(t.OutputSchema, decoded); err != nil {
+				return nil, &Error{Code: ErrSchemaMismatch, Path: path,
+					Err: err, Message: "node output violates type output_schema"}
+			}
+		}
+		return packetOf(decoded), nil
 	}), nil
 }
 
@@ -700,6 +682,26 @@ func retryPolicy(n map[string]any) retryCfg {
 		maxAttempts: asIntField(r["max_attempts"]),
 		delayMS:     int64(asIntField(r["delay_ms"])),
 	}
+}
+
+func firstPos(v, fallback, floor int) int {
+	if v > 0 {
+		return v
+	}
+	if fallback > 0 {
+		return fallback
+	}
+	return floor
+}
+
+func firstPos64(v, fallback, floor int64) int64 {
+	if v > 0 {
+		return v
+	}
+	if fallback > 0 {
+		return fallback
+	}
+	return floor
 }
 
 func isDeadline(err error) bool {

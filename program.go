@@ -64,46 +64,67 @@ func (p *Program) Run(ctx context.Context, request RunRequest, bindings Bindings
 			Message: err.Error(),
 		}
 	}
-	exec := executorAdapter(request.Ref, bindings.Nodes)
+	j := newRunJournal(request.Ref, bindings.Runs, lim)
+	// Admission and start are visible transitions, never silent
+	// progress (§8.1): a failed admission commit cannot start work.
+	if err := j.commit(ctx, request.Ref.RunID, 0,
+		StateTransition{Expected: "", Target: RunAdmitted},
+		[]Event{{Kind: EventRunAdmitted}}, nil); err != nil {
+		return RunResult{Status: RunFailed}, err
+	}
+	if err := j.commit(ctx, request.Ref.RunID, 0,
+		StateTransition{Expected: RunAdmitted, Target: RunRunning},
+		[]Event{{Kind: EventRunStarted}}, nil); err != nil {
+		return RunResult{Status: RunFailed}, err
+	}
+	exec := executorAdapter(j, bindings.Nodes)
 	out, diags, err := p.rt.Invoke(ctx, request.Input, exec)
-	if err != nil {
-		return RunResult{Status: RunFailed, Diagnostics: toDiagnostics(diags)}, adaptError(err)
+	status := RunSucceeded
+	var runErr error
+	switch {
+	case j.recovery.Load() || j.unknown.Load():
+		status = RunRecoveryRequired
+		runErr = err
+	case err != nil && ctx.Err() != nil:
+		status = RunCancelled
+		runErr = err
+	case err != nil:
+		status = RunFailed
+		runErr = err
+	}
+	// Terminal transition is best-effort durable evidence; an
+	// uncommittable terminal state is reported, not swallowed.
+	if err := j.commit(ctx, request.Ref.RunID, 0,
+		StateTransition{Expected: RunRunning, Target: status},
+		[]Event{{Kind: terminalEvent(status)}}, nil); err != nil {
+		return RunResult{Status: RunRecoveryRequired, Diagnostics: toDiagnostics(diags)}, err
 	}
 	return RunResult{
-		Status:      RunSucceeded,
+		Status:      status,
 		Outputs:     out,
 		Diagnostics: toDiagnostics(diags),
-	}, nil
+	}, adaptError(runErr)
+}
+
+func terminalEvent(s RunStatus) EventKind {
+	switch s {
+	case RunSucceeded:
+		return EventRunSucceeded
+	case RunCancelled:
+		return EventRunCancelled
+	case RunRecoveryRequired:
+		return EventRunRecoveryRequired
+	default:
+		return EventRunFailed
+	}
 }
 
 // executorAdapter converts the public NodeExecutor contract into the
-// runtime's neutral function surface. A Wait reply is a S06 contract
-// and reports unsupported_feature.
-func executorAdapter(ref ExecutionRef, nodes NodeExecutor) einoruntime.Executor {
+// runtime's neutral function surface through the per-run journal's
+// commit, permit and retry boundary (§7.3).
+func executorAdapter(j *runJournal, nodes NodeExecutor) einoruntime.Executor {
 	return func(ctx context.Context, c einoruntime.Call) (json.RawMessage, error) {
-		reply, err := nodes.Execute(ctx, NodeCall{
-			Ref:              ref,
-			Path:             c.Path,
-			TypeID:           c.TypeID,
-			ImplementationID: c.ImplementationID,
-			Config:           c.Config,
-			Input:            c.Input,
-			Attempt:          c.Attempt,
-		})
-		if err != nil {
-			return nil, err
-		}
-		if err := reply.Validate(); err != nil {
-			return nil, err
-		}
-		if reply.Wait != nil {
-			return nil, &Error{
-				Code:    ErrUnsupportedFeature,
-				Path:    c.Path,
-				Message: "wait replies are a S06 contract",
-			}
-		}
-		return reply.Output, nil
+		return j.executeCall(ctx, nodes, c)
 	}
 }
 
