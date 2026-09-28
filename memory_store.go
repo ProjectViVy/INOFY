@@ -31,6 +31,11 @@ type memRun struct {
 	limits      Limits
 	inputDigest string
 	checkpoint  *CheckpointEnvelope
+	waits       []WaitRequest
+	interrupts  map[string]string
+	gates       []string
+	resumeKey   string
+	resumeDig   string
 }
 
 type memCommit struct {
@@ -78,9 +83,14 @@ func (m *MemoryRunStore) Commit(ctx context.Context, ref ExecutionRef, change Ru
 			Message: "commit id reused with a different body"}
 	}
 	if run != nil {
-		if run.ref.Epoch != ref.Epoch {
+		// Writer epoch CAS: a newer epoch claims the run; an older
+		// one is a stale writer. Equal epochs continue the same claim.
+		if ref.Epoch < run.ref.Epoch {
 			return Receipt{}, &Error{Code: ErrStaleWriter, Path: ref.RunID,
 				Message: "writer epoch mismatch"}
+		}
+		if ref.Epoch > run.ref.Epoch {
+			run.ref.Epoch = ref.Epoch
 		}
 		if run.ref.ProgramDigest != ref.ProgramDigest {
 			return Receipt{}, &Error{Code: ErrCheckpointIncompatible, Path: ref.RunID,
@@ -113,6 +123,31 @@ func (m *MemoryRunStore) Commit(ctx context.Context, ref ExecutionRef, change Ru
 				run.inputDigest = meta.InputDigest
 				run.limits = meta.Limits
 			}
+		}
+		if ev.Kind == EventRunWaiting && len(ev.Data) > 0 {
+			var meta struct {
+				Waits      []WaitRequest     `json:"waits"`
+				Interrupts map[string]string `json:"interrupts"`
+				Gates      []string          `json:"gates"`
+			}
+			if json.Unmarshal(ev.Data, &meta) == nil {
+				run.waits = meta.Waits
+				run.interrupts = meta.Interrupts
+				run.gates = meta.Gates
+			}
+		}
+		if ev.Kind == EventRunResumed && len(ev.Data) > 0 {
+			var meta struct {
+				IdempotencyKey string `json:"idempotency_key"`
+				AnswersDigest  string `json:"answers_digest"`
+			}
+			if json.Unmarshal(ev.Data, &meta) == nil {
+				run.resumeKey = meta.IdempotencyKey
+				run.resumeDig = meta.AnswersDigest
+			}
+			run.waits = nil
+			run.interrupts = nil
+			run.gates = nil
 		}
 		key := opKeyFor(ev)
 		switch ev.Kind {
@@ -167,6 +202,12 @@ func (m *MemoryRunStore) Load(ctx context.Context, runID string) (RecoveryState,
 		v.Payload = append([]byte(nil), run.checkpoint.Payload...)
 		cp = &v
 	}
+	waits := make([]WaitRequest, len(run.waits))
+	copy(waits, run.waits)
+	ints := map[string]string{}
+	for k, v := range run.interrupts {
+		ints[k] = v
+	}
 	return RecoveryState{
 		Ref:                  run.ref,
 		Status:               run.status,
@@ -174,6 +215,11 @@ func (m *MemoryRunStore) Load(ctx context.Context, runID string) (RecoveryState,
 		Limits:               run.limits,
 		Usage:                run.usage,
 		LatestCheckpoint:     cp,
+		Waits:                waits,
+		Interrupts:           ints,
+		Gates:                append([]string(nil), run.gates...),
+		ResumeKey:            run.resumeKey,
+		ResumeAnswersDigest:  run.resumeDig,
 		UnresolvedOperations: ops,
 	}, nil
 }

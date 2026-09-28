@@ -83,6 +83,15 @@ func newRunJournal(ref ExecutionRef, store RunStore, lim Limits) *runJournal {
 	}
 }
 
+// seedFromUsage restores the durable budget carried by a committed
+// checkpoint so a resumed run never resets spent allowances (§7.4).
+func (j *runJournal) seedFromUsage(u Usage) {
+	j.acts.Store(int64(u.Activations))
+	j.attempts.Store(int64(u.Attempts))
+	j.outBytes.Store(u.CompletedOutputBytes)
+	j.clock.frozen = time.Duration(u.ActiveMS) * time.Millisecond
+}
+
 // commitID is stable across redelivery: run, generation, node path,
 // attempt and a monotonically assigned transition ordinal (§8.2).
 func (j *runJournal) commitID(path string, attempt int) string {

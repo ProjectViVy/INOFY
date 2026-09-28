@@ -472,7 +472,10 @@ type OperationRef struct {
 
 // RecoveryState is what RunStore.Load returns: admitted identities, input
 // digest and limits, current status, durable usage, the latest committed
-// checkpoint and unresolved operations.
+// checkpoint, the outstanding wait projection and unresolved operations.
+// Interrupts maps each outstanding wait RequestID to the Eino resume
+// identity committed at the waiting boundary; Gates lists the internal
+// gate interruptions resumed alongside authorized answers.
 type RecoveryState struct {
 	Ref                  ExecutionRef        `json:"ref"`
 	Status               RunStatus           `json:"status"`
@@ -480,6 +483,14 @@ type RecoveryState struct {
 	Limits               Limits              `json:"limits"`
 	Usage                Usage               `json:"usage"`
 	LatestCheckpoint     *CheckpointEnvelope `json:"latest_checkpoint,omitempty"`
+	Waits                []WaitRequest       `json:"waits,omitempty"`
+	Interrupts           map[string]string   `json:"interrupts,omitempty"`
+	Gates                []string            `json:"gates,omitempty"`
+	// ResumeKey/ResumeAnswersDigest record the last committed resume
+	// claim so an identical authorized repeat returns the recorded
+	// outcome instead of re-executing (§8.4).
+	ResumeKey            string              `json:"resume_key,omitempty"`
+	ResumeAnswersDigest  string              `json:"resume_answers_digest,omitempty"`
 	UnresolvedOperations []OperationRef      `json:"unresolved_operations,omitempty"`
 }
 

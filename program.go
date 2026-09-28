@@ -2,6 +2,7 @@ package inofy
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -65,6 +66,48 @@ func (p *Program) Run(ctx context.Context, request RunRequest, bindings Bindings
 		}
 	}
 	j := newRunJournal(request.Ref, bindings.Runs, lim)
+	// A prior record classifies this run before any new work (§8.5):
+	// running on reopen means the process lost settlement; terminal
+	// or waiting runs cannot be re-admitted by a fresh Run.
+	if bindings.Runs != nil {
+		if st, lerr := bindings.Runs.Load(ctx, request.Ref.RunID); lerr == nil {
+			switch st.Status {
+			case RunRunning:
+				// Uncommitted effects may exist; only the ledger can
+				// prove safety, so the honest state is
+				// recovery_required (§8.5).
+				if cerr := j.commit(ctx, request.Ref.RunID, 0,
+					StateTransition{Expected: RunRunning, Target: RunRecoveryRequired},
+					[]Event{{Kind: EventRunRecoveryRequired}}, nil); cerr != nil {
+					 return RunResult{Status: RunFailed}, cerr
+				}
+				return RunResult{
+					Status: RunRecoveryRequired,
+					Diagnostics: []Diagnostic{{
+						Path:    request.Ref.RunID,
+						Code:    string(ErrOutcomeUnknown),
+						Message: "run record recovered running on reopen; unresolved effects require host reconciliation",
+					}},
+				}, &Error{Code: ErrOutcomeUnknown, Path: request.Ref.RunID,
+					Message: "running run recovered on reopen"}
+			case RunWaiting:
+				return RunResult{Status: RunFailed}, &Error{
+					Code:    ErrRevisionConflict,
+					Path:    request.Ref.RunID,
+					Message: "run is durably waiting; resume it instead",
+				}
+			case RunAdmitted:
+				// Admitted but never started: continue normally —
+				// the admission commit below replays idempotently.
+			default:
+				return RunResult{Status: st.Status}, &Error{
+					Code:    ErrRevisionConflict,
+					Path:    request.Ref.RunID,
+					Message: "terminal run cannot be re-admitted",
+				}
+			}
+		}
+	}
 	// Admission and start are visible transitions, never silent
 	// progress (§8.1): a failed admission commit cannot start work.
 	// The admitted input digest and effective limits ride in the
@@ -261,12 +304,228 @@ func payloadChecksum(b []byte) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// resume is the authorized continuation path (§8.4): Task 2 wires
-// identity checks, claim CAS and addressed answers.
+// resume is the authorized continuation path (§8.4): the stored
+// waiting snapshot must prove every identity before the run's writer
+// epoch claims the next generation, all outstanding waits must be
+// answered together and validated, and only then does Eino continue
+// under the remaining budget from the committed checkpoint.
 func (p *Program) resume(ctx context.Context, request RunRequest, bindings Bindings) (RunResult, error) {
-	return RunResult{Status: RunFailed}, &Error{
-		Code:    ErrUnsupportedFeature,
-		Path:    request.Ref.RunID,
-		Message: "resume claim path lands in S06 task 2",
+	if bindings.Nodes == nil {
+		return RunResult{Status: RunFailed}, &Error{
+			Code:    ErrBindingMissing,
+			Path:    request.Ref.RunID,
+			Message: "Bindings.Nodes executor is required",
+		}
 	}
+	if bindings.Runs == nil {
+		return RunResult{Status: RunFailed}, &Error{
+			Code:    ErrUnsupportedFeature,
+			Path:    request.Ref.RunID,
+			Message: "resume requires a durable RunStore",
+		}
+	}
+	st, err := bindings.Runs.Load(ctx, request.Ref.RunID)
+	if err != nil {
+		return RunResult{Status: RunFailed}, err
+	}
+	// Replaying an already-claimed resume: an identical authorized
+	// answer set returns the recorded outcome instead of re-executing.
+	if st.Status != RunWaiting {
+		return resumeReplay(request, st, bindings.Runs)
+	}
+	env := st.LatestCheckpoint
+	if env == nil {
+		return RunResult{Status: RunFailed}, &Error{
+			Code:    ErrCheckpointIncompatible,
+			Path:    request.Ref.RunID,
+			Message: "waiting run has no committed checkpoint",
+		}
+	}
+	if err := verifyEnvelope(env, st, p.meta); err != nil {
+		return RunResult{Status: RunFailed}, err
+	}
+	if len(request.Input) > 0 && inputDigest(request.Input) != st.InputDigest {
+		return RunResult{Status: RunFailed}, &Error{
+			Code:    ErrCheckpointIncompatible,
+			Path:    request.Ref.RunID,
+			Message: "resume input does not match the admitted input digest",
+		}
+	}
+	// Every outstanding wait must be answered together; unknown or
+	// schema-violating answers reject the whole resume.
+	answers := request.Resume.Answers
+	if len(answers) != len(st.Waits) {
+		return RunResult{Status: RunFailed}, &Error{
+			Code:    ErrRevisionConflict,
+			Path:    request.Ref.RunID,
+			Message: "resume must answer every outstanding wait",
+		}
+	}
+	resumeData := map[string]any{}
+	for _, w := range st.Waits {
+		raw, ok := answers[w.RequestID]
+		if !ok {
+			return RunResult{Status: RunFailed}, &Error{
+				Code:    ErrRevisionConflict,
+				Path:    request.Ref.RunID,
+				Message: "missing answer for wait " + w.RequestID,
+			}
+		}
+		var decoded any
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			return RunResult{Status: RunFailed}, &Error{
+				Code:    ErrSchemaMismatch,
+				Path:    request.Ref.RunID,
+				Message: "answer for " + w.RequestID + " is not JSON",
+			}
+		}
+		if len(w.AnswerSchema) > 0 {
+			if err := definition.ValidateValueJSON(w.AnswerSchema, decoded); err != nil {
+				return RunResult{Status: RunFailed}, &Error{
+					Code:    ErrSchemaMismatch,
+					Path:    request.Ref.RunID,
+					Message: "answer for " + w.RequestID + " violates its answer schema",
+				}
+			}
+		}
+		addr, ok := st.Interrupts[w.RequestID]
+		if !ok {
+			return RunResult{Status: RunFailed}, &Error{
+				Code:    ErrCheckpointIncompatible,
+				Path:    request.Ref.RunID,
+				Message: "wait " + w.RequestID + " has no committed resume address",
+			}
+		}
+		resumeData[addr] = decoded
+	}
+	for _, g := range st.Gates {
+		resumeData[g] = map[string]any{}
+	}
+	// Claim the next generation under the writer epoch before any
+	// effect runs; a conflicting claim loses the CAS and never
+	// executes a node.
+	gen := env.ContinuationGeneration + 1
+	lim := st.Limits
+	if (lim == Limits{}) {
+		lim = effectiveLimits(request.Limits)
+	}
+	// The claim commit carries a fresh nonce: two concurrent resumes
+	// with identical answers hash to the same CommitID but different
+	// bodies, so the loser is rejected by idempotency_conflict and
+	// never runs an effect. A genuine retry of the SAME claim (same
+	// caller intent) is matched on resumption via ResumeKey above.
+	ref := request.Ref
+	ref.Epoch = st.Ref.Epoch + 1
+	j := newRunJournal(ref, bindings.Runs, lim)
+	j.gen = gen
+	j.seedFromUsage(env.Usage)
+	nonce := make([]byte, 16)
+	if _, err := rand.Read(nonce); err != nil {
+		return RunResult{Status: RunFailed}, err
+	}
+	claim, _ := json.Marshal(map[string]any{
+		"idempotency_key": request.Resume.IdempotencyKey,
+		"generation":      gen,
+		"answers_digest":  answersDigest(answers),
+		"claim_nonce":     hex.EncodeToString(nonce),
+	})
+	if err := j.commit(ctx, "resume", gen,
+		StateTransition{Expected: RunWaiting, Target: RunRunning},
+		[]Event{{Kind: EventRunResumed, Data: claim}}, nil); err != nil {
+		return RunResult{Status: RunFailed}, err
+	}
+	// Re-stage the committed checkpoint under the same ID so Eino
+	// reloads the exact payload; nothing else may produce state.
+	cpID := request.Ref.RunID + "/" + itoa(env.ContinuationGeneration)
+	p.rt.Staging().Stage(cpID, env.Payload)
+	exec := executorAdapter(j, bindings.Nodes)
+	res, err := p.rt.Invoke(ctx, request.Input, exec,
+		einoruntime.RunOptions{
+			CheckPointID: cpID,
+			Gate:         &j.suspending,
+			ResumeData:   resumeData,
+		})
+	if res.Suspend != nil {
+		return p.suspend(ctx, request, j, res)
+	}
+	status := RunSucceeded
+	var runErr error
+	out := res.Output
+	switch {
+	case j.recovery.Load() || j.unknown.Load():
+		status = RunRecoveryRequired
+		runErr = err
+	case err != nil && ctx.Err() != nil:
+		status = RunCancelled
+		runErr = err
+	case err != nil:
+		status = RunFailed
+		runErr = err
+	}
+	if err := j.commit(ctx, request.Ref.RunID, 0,
+		StateTransition{Expected: RunRunning, Target: status},
+		[]Event{{Kind: terminalEvent(status)}}, nil); err != nil {
+		return RunResult{Status: RunRecoveryRequired}, err
+	}
+	return RunResult{
+		Status:      status,
+		Outputs:     out,
+		Diagnostics: toDiagnostics(res.Diags),
+	}, adaptError(runErr)
+}
+
+// resumeReplay handles a resume request against a run already past
+// the waiting boundary: an identical authorized answer set returns
+// the recorded outcome; anything else is a claim conflict.
+func resumeReplay(request RunRequest, st RecoveryState, store RunStore) (RunResult, error) {
+	if st.ResumeKey != "" &&
+		st.ResumeKey == request.Resume.IdempotencyKey &&
+		st.ResumeAnswersDigest == answersDigest(request.Resume.Answers) {
+		return RunResult{Status: st.Status}, nil
+	}
+	return RunResult{Status: st.Status}, &Error{
+		Code:    ErrRevisionConflict,
+		Path:    request.Ref.RunID,
+		Message: "run is not waiting",
+	}
+}
+
+// verifyEnvelope proves the committed checkpoint binds the run's
+// admitted identities before any resume (§8.4).
+func verifyEnvelope(env *CheckpointEnvelope, st RecoveryState, meta ProgramMeta) error {
+	bad := func(msg string) error {
+		return &Error{Code: ErrCheckpointIncompatible, Path: st.Ref.RunID, Message: msg}
+	}
+	switch {
+	case env.ProgramDigest != meta.ProgramDigest:
+		return bad("checkpoint program digest mismatch")
+	case env.DefinitionDigest != meta.DefinitionDigest:
+		return bad("checkpoint definition digest mismatch")
+	case env.EinoBuild != meta.EinoBuild:
+		return bad("checkpoint eino build mismatch")
+	case env.SerializerVersion != serializerVersion:
+		return bad("checkpoint serializer version mismatch")
+	case env.InputDigest != st.InputDigest:
+		return bad("checkpoint input digest mismatch")
+	case payloadChecksum(env.Payload) != env.Checksum:
+		return bad("checkpoint payload checksum mismatch")
+	}
+	return nil
+}
+
+// answersDigest binds the whole answer map into one canonical digest
+// so a conflicting replay cannot reuse a prior claim's identity.
+func answersDigest(answers map[string]json.RawMessage) string {
+	doc := map[string]any{}
+	for k, v := range answers {
+		var d any
+		if err := json.Unmarshal(v, &d); err == nil {
+			doc[k] = d
+		}
+	}
+	norm, err := definition.Canonical(doc)
+	if err != nil {
+		return ""
+	}
+	return definition.DigestBytes(norm)
 }
