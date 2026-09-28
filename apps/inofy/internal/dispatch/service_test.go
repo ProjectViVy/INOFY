@@ -99,7 +99,7 @@ func TestRestartClassificationAndQueueBounds(t *testing.T) {
 		// queue; the 33rd+ are rejected without a hidden row.
 		var admitted, rejected int
 		for i := 0; i < 38; i++ {
-			id, err := d.Admit(ctx, "p1", "wf", 1, json.RawMessage(`{}`), "k"+itoa(i))
+			id, err := d.Admit(ctx, "p1", "wf", 1, json.RawMessage(`{}`), json.RawMessage(`{}`), "k"+itoa(i))
 			if err != nil {
 				rejected++
 				continue
@@ -124,7 +124,7 @@ func TestRestartClassificationAndQueueBounds(t *testing.T) {
 		s, d, _ := appFixture(t, dir)
 		// Admit WITHOUT starting the dispatcher (crash between admit
 		// and wakeup).
-		id, err := d.Admit(ctx, "p1", "wf", 1, json.RawMessage(`{}`), "k1")
+		id, err := d.Admit(ctx, "p1", "wf", 1, json.RawMessage(`{}`), json.RawMessage(`{}`), "k1")
 		if err != nil {
 			t.Fatalf("admit: %v", err)
 		}
@@ -277,11 +277,11 @@ func TestRestartClassificationAndQueueBounds(t *testing.T) {
 		dir := t.TempDir()
 		s, d, _ := appFixture(t, dir)
 		defer s.Close()
-		id1, err := d.Admit(ctx, "p1", "wf", 1, json.RawMessage(`{}`), "dup-key")
+		id1, err := d.Admit(ctx, "p1", "wf", 1, json.RawMessage(`{}`), json.RawMessage(`{}`), "dup-key")
 		if err != nil {
 			t.Fatal(err)
 		}
-		id2, err := d.Admit(ctx, "p1", "wf", 1, json.RawMessage(`{}`), "dup-key")
+		id2, err := d.Admit(ctx, "p1", "wf", 1, json.RawMessage(`{}`), json.RawMessage(`{}`), "dup-key")
 		if err != nil {
 			t.Fatal(err)
 		}

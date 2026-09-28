@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -16,7 +17,7 @@ import (
 // S08 plan). Same (principal, workflow, key) replays the same run ID.
 // admissionFailure counts as a pending-admission slot so a queue
 // bound can reject without creating a hidden row.
-func (s *Store) Admit(ctx context.Context, principal, workflowID string, revision uint64, inputDigest, key string) (string, error) {
+func (s *Store) Admit(ctx context.Context, principal, workflowID string, revision uint64, source, input json.RawMessage, key string) (string, error) {
 	var existing string
 	err := s.db.QueryRowContext(ctx,
 		`SELECT run_id FROM runs WHERE principal = ? AND workflow_id = ? AND admission_key = ?`,
@@ -27,6 +28,8 @@ func (s *Store) Admit(ctx context.Context, principal, workflowID string, revisio
 	if !errors.Is(err, sql.ErrNoRows) {
 		return "", err
 	}
+	sum := sha256.Sum256(input)
+	inputDigest := "sha256:" + hex.EncodeToString(sum[:])
 	runID := newRunID()
 	admitData, _ := json.Marshal(map[string]any{
 		"input_digest": inputDigest,
@@ -36,14 +39,29 @@ func (s *Store) Admit(ctx context.Context, principal, workflowID string, revisio
 	// first durable commit (EventRunAdmitted Expected="") transitions
 	// it to admitted in the same transaction as the dispatcher's
 	// claim, so a crash between queue insert and admit commit leaves
-	// an inspectable row, never a hidden effect.
+	// an inspectable row, never a hidden effect. source_json is the
+	// immutable admitted snapshot — a later draft edit cannot change
+	// what this run executes (§11.2).
 	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO runs (run_id, workflow_id, principal, revision, program_digest, status, input_digest, limits_json, admission_key)
-		 VALUES (?, ?, ?, ?, '', 'queued', ?, ?, ?)`,
-		runID, workflowID, principal, revision, inputDigest, string(admitData), key); err != nil {
+		`INSERT INTO runs (run_id, workflow_id, principal, revision, program_digest, status, input_digest, limits_json, admission_key, source_json, input_json)
+		 VALUES (?, ?, ?, ?, '', 'queued', ?, ?, ?, ?, ?)`,
+		runID, workflowID, principal, revision, inputDigest, string(admitData), key,
+		[]byte(source), []byte(input)); err != nil {
 		return "", err
 	}
 	return runID, nil
+}
+
+// RunSource returns the immutable admitted snapshot, input and
+// binding for a run row — what a factory rebuilds the program from.
+func (s *Store) RunSource(ctx context.Context, runID string) (source, input json.RawMessage, workflowID string, revision uint64, err error) {
+	err = s.db.QueryRowContext(ctx,
+		`SELECT source_json, input_json, workflow_id, revision FROM runs WHERE run_id = ?`,
+		runID).Scan(&source, &input, &workflowID, &revision)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil, "", 0, &inofy.Error{Code: inofy.ErrRevisionConflict, Path: runID, Message: "unknown run"}
+	}
+	return source, input, workflowID, revision, err
 }
 
 // QueuedRuns returns run IDs in admission order for the bounded
@@ -118,6 +136,14 @@ func (s *Store) Claim(ctx context.Context, runID string) (bool, error) {
 	}
 	n, err := res.RowsAffected()
 	return n == 1, err
+}
+
+// ReleaseClaim returns a claimed row to queued when the factory
+// failed before any effect — the run never committed, so the row
+// honestly re-enters the dispatchable set.
+func (s *Store) ReleaseClaim(ctx context.Context, runID string) {
+	_, _ = s.db.ExecContext(ctx,
+		`UPDATE runs SET status = 'queued' WHERE run_id = ? AND status = 'claimed'`, runID)
 }
 
 // RequeueClaims resets dead claims to queued at Start.

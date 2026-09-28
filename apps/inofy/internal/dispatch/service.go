@@ -8,8 +8,6 @@ package dispatch
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"sync"
 	"sync/atomic"
@@ -42,6 +40,7 @@ type Service struct {
 	running  bool
 	inflight sync.WaitGroup
 	executed atomic.Int64
+	lifelines map[string]context.CancelFunc
 }
 
 // New binds a dispatcher to its storage authority.
@@ -56,16 +55,18 @@ func New(store *storage.Store, opts Options, factory ProgramFactory) *Service {
 		store:   store,
 		opts:    opts,
 		factory: factory,
-		wake:    make(chan struct{}, 1),
-		stopped: make(chan struct{}),
+		wake:      make(chan struct{}, 1),
+		stopped:   make(chan struct{}),
+		lifelines: map[string]context.CancelFunc{},
 	}
 }
 
-// Admit persists the immutable admission row (snapshot binding +
-// input digest + idempotency key) then wakes the queue. The commit
-// happens BEFORE dispatch: a crash after Admit returns leaves an
-// inspectable row the next boot dispatches exactly once.
-func (s *Service) Admit(ctx context.Context, principal, workflowID string, revision uint64, input json.RawMessage, key string) (string, error) {
+// Admit persists the immutable admission row — source snapshot
+// (revision artifact or draft-ETag artifact), input and idempotency
+// key — then wakes the queue. The commit happens BEFORE dispatch:
+// a crash after Admit returns leaves an inspectable row the next
+// boot dispatches exactly once.
+func (s *Service) Admit(ctx context.Context, principal, workflowID string, revision uint64, source, input json.RawMessage, key string) (string, error) {
 	pending, err := s.store.PendingCount(ctx)
 	if err != nil {
 		return "", err
@@ -74,9 +75,7 @@ func (s *Service) Admit(ctx context.Context, principal, workflowID string, revis
 		return "", &inofy.Error{Code: inofy.ErrRevisionConflict, Path: workflowID,
 			Message: "pending admission bound reached"}
 	}
-	sum := sha256.Sum256(input)
-	digest := "sha256:" + hex.EncodeToString(sum[:])
-	runID, err := s.store.Admit(ctx, principal, workflowID, revision, digest, key)
+	runID, err := s.store.Admit(ctx, principal, workflowID, revision, source, input, key)
 	if err != nil {
 		return "", err
 	}
@@ -192,12 +191,56 @@ func (s *Service) runOne(ctx context.Context, runID string) {
 	}
 	prog, bindings, req, err := s.factory(runID)
 	if err != nil {
+		s.store.ReleaseClaim(ctx, runID)
 		return
 	}
+	// Register the run's lifeline so POST /cancel can reach the
+	// in-flight execution; unregistered when the run settles.
+	runCtx, cancel := context.WithCancel(ctx)
+	s.mu.Lock()
+	s.lifelines[runID] = cancel
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.lifelines, runID)
+		s.mu.Unlock()
+	}()
 	s.executed.Add(1)
 	// Run() performs admission/start commits idempotently — the
 	// 'claimed' placeholder is adopted by the first commit's
 	// Expected="" transition (same notAdmitted path as 'queued'),
 	// and a durable 'admitted' row continues from its record.
-	_, _ = prog.Run(ctx, req, bindings)
+	_, _ = prog.Run(runCtx, req, bindings)
+}
+
+// Cancel requests idempotent run cancellation (§11.4): live
+// executions get their context cancelled (the engine commits
+// run_cancelled); quiescent rows transition durably without ever
+// having had an executor.
+func (s *Service) Cancel(ctx context.Context, runID string) error {
+	s.mu.Lock()
+	cancel, live := s.lifelines[runID]
+	s.mu.Unlock()
+	if live {
+		cancel()
+		return nil
+	}
+	ok, err := s.store.CancelRun(ctx, runID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		// Already terminal — cancellation is idempotent.
+		if _, err := s.store.StatusOf(ctx, runID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ProgramFor rebuilds the compiled program for an admitted run —
+// used by the resume path to continue from the committed checkpoint.
+func (s *Service) ProgramFor(_ context.Context, runID string) (*inofy.Program, error) {
+	prog, _, _, err := s.factory(runID)
+	return prog, err
 }
