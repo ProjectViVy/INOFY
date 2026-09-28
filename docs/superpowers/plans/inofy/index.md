@@ -27,7 +27,7 @@ An edge names an **immediate** required accepted output; file conflicts are belo
 | Story | Outcome and owning plan | Immediate predecessor / required output | Status | Evidence or precise blocker |
 |---|---|---|---|---|
 | S01 | [Public contracts and Eino proofs](S01.md) | — | Done | Green vs eino v0.9.13: root module + contracts, G6 consumer import (1392762), G2 DAG/branch probes (9ea99be), G3/G4 repeat/resume probes (7205956). Findings: resume IDs rotate per emission (Address is stable); unmatched resume keys are silently ignored; non-END-ancestral nodes race settlement. |
-| S02 | [Definition validation and digests](S02.md) | S01: accepted types/module | Planned | G1 fixtures and strict decoder unrun. |
+| S02 | [Definition validation and digests](S02.md) | S01: accepted types/module | Done | Green: strict decoder + portable schema profile (976d372), inofy-normal-v1 normalizer + named-version digests (5d6aa86), bounded graph admission incl. regions/dominators/activation bound (3f8622b). Fixtures: testdata/definition/{valid,invalid,normal_v1}.json. |
 | S03 | [DAG, switch and select compiler](S03.md) | S01: Eino G2 proof; S02: admitted semantic graph | Blocked | G2 proof green in S01; awaits S02. |
 | S04 | [Bounded repeat compiler](S04.md) | S03: executable Workflow and branch contract; S01: G3 proof | Blocked | G3 proof green in S01; awaits S03. |
 | S05 | [Bounded execution and durable events](S05.md) | S03: compiled nodes; S02: schemas/limits | Planned | Host-boundary fault tests pending. |
