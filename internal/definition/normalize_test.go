@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ProjectViVy/inofy"
 	"github.com/ProjectViVy/inofy/internal/definition"
 )
 
@@ -192,6 +193,56 @@ func TestDigestHelpers(t *testing.T) {
 	}
 	if c1 == c3 {
 		t.Fatal("implementation identity change did not move CatalogDigest")
+	}
+}
+
+// TestPublicDigestAdapters exercises the root-package facade: digests
+// over typed Definition/Artifact values must match the internal
+// canonical bytes and respect the presentation boundary.
+func TestPublicDigestAdapters(t *testing.T) {
+	raw, err := os.ReadFile("../../testdata/definition/valid.json")
+	if err != nil {
+		t.Fatalf("read valid.json: %v", err)
+	}
+	art, diags, err := inofy.DecodeArtifact(raw)
+	if err != nil || len(diags) != 0 {
+		t.Fatalf("decode: %v %#v", err, diags)
+	}
+
+	norm, err := inofy.Normalize(art.Definition)
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if len(norm) == 0 || norm[len(norm)-1] == '\n' {
+		t.Fatal("normalized bytes must be non-empty without a trailing newline")
+	}
+
+	defDigest, err := inofy.DefinitionDigest(art.Definition)
+	if err != nil {
+		t.Fatalf("definition digest: %v", err)
+	}
+	artDigest, err := inofy.ArtifactDigest(art)
+	if err != nil {
+		t.Fatalf("artifact digest: %v", err)
+	}
+	if defDigest == artDigest {
+		t.Fatal("presentation must move ArtifactDigest off DefinitionDigest")
+	}
+
+	catalog, err := inofy.NewCatalog([]inofy.NodeDescriptor{{
+		TypeID: "inofy.value@1", ImplementationID: "impl-1",
+	}})
+	if err != nil {
+		t.Fatalf("catalog: %v", err)
+	}
+	catDigest, err := inofy.CatalogDigest(art.Definition, catalog)
+	if err != nil {
+		t.Fatalf("catalog digest: %v", err)
+	}
+	for _, d := range []string{defDigest, artDigest, catDigest} {
+		if !strings.HasPrefix(d, "inofy-normal-v1:sha256:") || len(d) != len("inofy-normal-v1:sha256:")+64 {
+			t.Fatalf("digest %q lacks the named-version envelope", d)
+		}
 	}
 }
 
