@@ -105,6 +105,26 @@ func (s *Store) ProtectedOutput(ctx context.Context, runID, nodePath string) (js
 	return json.RawMessage(out), err
 }
 
+// CommittedOutput returns the committed output for one exact
+// (run, node path, attempt) — the App executor's effect ledger
+// (§11.2 node_executions doubles as it). The operation key is the
+// caller's own claim: a repeat call under the same key replays the
+// committed row instead of repeating the effect.
+func (s *Store) CommittedOutput(ctx context.Context, runID, path string, attempt int) (json.RawMessage, bool, error) {
+	var out []byte
+	err := s.db.QueryRowContext(ctx,
+		`SELECT protected_output FROM node_executions
+		 WHERE run_id = ? AND node_path = ? AND attempt = ? AND unresolved = 0`,
+		runID, path, attempt).Scan(&out)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return json.RawMessage(out), true, nil
+}
+
 // CancelRun durably cancels a run that holds no live executor
 // (queued/admitted placeholders and quiescent waiting rows). A
 // running row is cancelled through its in-flight context instead —
