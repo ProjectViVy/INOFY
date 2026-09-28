@@ -258,16 +258,7 @@ func ValidateDefinition(def Definition, catalog Catalog, opts CompileOptions) []
 		if !ok {
 			continue
 		}
-		types = append(types, definition.TypeRef{
-			TypeID:           d.TypeID,
-			ImplementationID: d.ImplementationID,
-			ConfigSchema:     d.ConfigSchema,
-			InputSchema:      d.InputSchema,
-			OutputSchema:     d.OutputSchema,
-			Capabilities:     d.Capabilities,
-			Replay:           string(d.Replay),
-			SupportsWait:     d.SupportsWait,
-		})
+		types = append(types, typeRefOf(d))
 	}
 	lim := effectiveLimits(opts.Limits)
 	var findings []definition.Finding
@@ -284,6 +275,79 @@ func ValidateDefinition(def Definition, catalog Catalog, opts CompileOptions) []
 		MaxDefinitionBytes: lim.MaxDefinitionBytes,
 	})...)
 	return toDiagnostics(findings)
+}
+
+// Normalize encodes a definition in inofy-normal-v1 form (§4.3).
+func Normalize(def Definition) ([]byte, error) {
+	doc, err := defToDoc(def)
+	if err != nil {
+		return nil, err
+	}
+	return definition.NormalizeDefinitionDoc(doc)
+}
+
+// DefinitionDigest hashes the semantic definition only; presentation
+// metadata is excluded, so layout edits do not move this digest.
+func DefinitionDigest(def Definition) (string, error) {
+	norm, err := Normalize(def)
+	if err != nil {
+		return "", err
+	}
+	return definition.DigestBytes(norm), nil
+}
+
+// ArtifactDigest covers the full envelope including presentation.
+func ArtifactDigest(a Artifact) (string, error) {
+	raw, err := json.Marshal(a)
+	if err != nil {
+		return "", err
+	}
+	var doc map[string]any
+	if err := newGenericDecoder(raw).Decode(&doc); err != nil {
+		return "", err
+	}
+	norm, err := definition.NormalizeArtifactDoc(doc)
+	if err != nil {
+		return "", err
+	}
+	return definition.DigestBytes(norm), nil
+}
+
+// CatalogDigest covers only the node descriptors this definition uses
+// plus their trusted implementation identities.
+func CatalogDigest(def Definition, catalog Catalog) (string, error) {
+	doc, err := defToDoc(def)
+	if err != nil {
+		return "", err
+	}
+	types := make([]definition.TypeRef, 0, len(catalog.Types()))
+	for _, id := range catalog.Types() {
+		d, ok := catalog.Lookup(id)
+		if !ok {
+			continue
+		}
+		types = append(types, typeRefOf(d))
+	}
+	return definition.CatalogDigestDoc(doc, types)
+}
+
+func typeRefOf(d NodeDescriptor) definition.TypeRef {
+	return definition.TypeRef{
+		TypeID:           d.TypeID,
+		ImplementationID: d.ImplementationID,
+		ConfigSchema:     d.ConfigSchema,
+		InputSchema:      d.InputSchema,
+		OutputSchema:     d.OutputSchema,
+		Capabilities:     d.Capabilities,
+		Replay:           string(d.Replay),
+		SupportsWait:     d.SupportsWait,
+	}
+}
+
+func newGenericDecoder(raw []byte) *json.Decoder {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	return dec
 }
 
 // defToDoc re-encodes a typed definition into the generic document the

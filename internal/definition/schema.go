@@ -6,6 +6,7 @@
 package definition
 
 import (
+	"bytes"
 	"encoding/json"
 	"slices"
 	"strconv"
@@ -160,6 +161,13 @@ func validateValue(raw json.RawMessage, v any) error {
 		return err
 	}
 	return sch.Validate(v)
+}
+
+// newDecoderBytes returns a UseNumber decoder for raw JSON bytes.
+func newDecoderBytes(raw []byte) *json.Decoder {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	return dec
 }
 
 // marshalBack re-encodes a generic document value into JSON bytes. The
