@@ -1,0 +1,27 @@
+{
+  "cases": [
+    {
+      "name": "envelope_extra_field",
+      "doc": {
+        "definition": {"schema_version": "inofy.workflow/v1", "graph": {"nodes": [{"id": "a", "kind": "call", "type": "t@1"}], "edges": [], "exits": ["a"]}},
+        "presentation": {},
+        "runtime_hook": "evil()"
+      },
+      "expect": {"check": "schema", "path": "/runtime_hook", "code": "unknown_field"}
+    },
+    {
+      "name": "call_node_missing_type",
+      "doc": {
+        "definition": {"schema_version": "inofy.workflow/v1", "graph": {"nodes": [{"id": "a", "kind": "call"}], "edges": [], "exits": ["a"]}}
+      },
+      "expect": {"check": "schema", "path": "/definition/graph/nodes/0", "code": "missing_field"}
+    },
+    {
+      "name": "select_without_owning_switch",
+      "doc": {
+        "definition": {"schema_version": "inofy.workflow/v1", "graph": {"nodes": [{"id": "s", "kind": "select", "candidates": [{"source": "a", "pointer": "/o"}]}, {"id": "a", "kind": "call", "type": "t@1"}], "edges": [], "exits": ["s"]}}
+      },
+      "expect": {"check": "schema", "path": "/definition/graph/nodes/0", "code": "missing_field"}
+    }
+  ]
+}

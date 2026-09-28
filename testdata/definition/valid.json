@@ -1,0 +1,96 @@
+{
+  "definition": {
+    "schema_version": "inofy.workflow/v1",
+    "inputs_schema": {
+      "type": "object",
+      "properties": {
+        "query": {"type": "string", "minLength": 1}
+      },
+      "required": ["query"],
+      "additionalProperties": false
+    },
+    "outputs_schema": {
+      "type": "object",
+      "properties": {"answer": {"type": "string"}}
+    },
+    "graph": {
+      "nodes": [
+        {
+          "id": "search",
+          "kind": "call",
+          "type": "inofy.value@1",
+          "config": {"limit": 3},
+          "inputs": {"query": {"source": "input", "pointer": "/query"}}
+        },
+        {
+          "id": "route",
+          "kind": "switch",
+          "inputs": {"hits": {"source": "search", "pointer": "/hits"}},
+          "cases": [
+            {"port": "have", "when": {"op": "gt", "left": {"source": "input", "pointer": "/hits"}, "right": {"literal": 0}}}
+          ],
+          "default_port": "none",
+          "join": "pick"
+        },
+        {
+          "id": "expand",
+          "kind": "call",
+          "type": "inofy.value@1",
+          "inputs": {"seed": {"source": "route", "pointer": "/hits"}}
+        },
+        {
+          "id": "empty",
+          "kind": "call",
+          "type": "inofy.value@1"
+        },
+        {
+          "id": "pick",
+          "kind": "select",
+          "switch": "route",
+          "candidates": [
+            {"source": "expand", "pointer": "/out"},
+            {"source": "empty", "pointer": "/out"}
+          ],
+          "fallback": {"literal": "none"}
+        },
+        {
+          "id": "loop",
+          "kind": "repeat",
+          "initial": {"acc": {"literal": 0}},
+          "state_schema": {"type": "object"},
+          "body": {
+            "nodes": [
+              {"id": "step", "kind": "call", "type": "inofy.value@1"}
+            ],
+            "edges": [],
+            "exits": ["step"],
+            "outputs": {"acc": {"source": "step", "pointer": "/acc"}}
+          },
+          "max_iterations": 8,
+          "until": {"op": "gte", "left": {"source": "input", "pointer": "/acc"}, "right": {"literal": 5}}
+        }
+      ],
+      "edges": [
+        {"from": "search", "to": "route"},
+        {"from": "route", "to": "expand", "port": "have"},
+        {"from": "route", "to": "empty", "port": "none"},
+        {"from": "expand", "to": "pick"},
+        {"from": "empty", "to": "pick"},
+        {"from": "pick", "to": "loop"}
+      ],
+      "exits": ["loop", "pick"],
+      "outputs": {"answer": {"source": "pick", "pointer": "/answer"}}
+    },
+    "limits": {"max_iterations": 8}
+  },
+  "presentation": {
+    "title": "demo",
+    "description": "canonical valid artifact",
+    "layout": {
+      "positions": {"search": {"x": 10, "y": 20}, "route": {"x": 10, "y": 120}},
+      "viewport": {"x": 0, "y": 0, "zoom": 1},
+      "collapsed": []
+    },
+    "custom_ui_hint": {"color": "blue"}
+  }
+}
