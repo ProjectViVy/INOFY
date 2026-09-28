@@ -26,12 +26,12 @@ An edge names an **immediate** required accepted output; file conflicts are belo
 
 | Story | Outcome and owning plan | Immediate predecessor / required output | Status | Evidence or precise blocker |
 |---|---|---|---|---|
-| S01 | [Public contracts and Eino proofs](S01.md) | — | Planned | Go toolchain absent here; exact v0.9.13 behavioral fixtures must run before S03/S04/S06. |
+| S01 | [Public contracts and Eino proofs](S01.md) | — | Done | Green vs eino v0.9.13: root module + contracts, G6 consumer import (1392762), G2 DAG/branch probes (9ea99be), G3/G4 repeat/resume probes (7205956). Findings: resume IDs rotate per emission (Address is stable); unmatched resume keys are silently ignored; non-END-ancestral nodes race settlement. |
 | S02 | [Definition validation and digests](S02.md) | S01: accepted types/module | Planned | G1 fixtures and strict decoder unrun. |
-| S03 | [DAG, switch and select compiler](S03.md) | S01: Eino G2 proof; S02: admitted semantic graph | Blocked | G2 must verify inactive branches and non-triggering mappings. |
-| S04 | [Bounded repeat compiler](S04.md) | S03: executable Workflow and branch contract; S01: G3 proof | Blocked | G3 nested cyclic Graph composition unrun. |
+| S03 | [DAG, switch and select compiler](S03.md) | S01: Eino G2 proof; S02: admitted semantic graph | Blocked | G2 proof green in S01; awaits S02. |
+| S04 | [Bounded repeat compiler](S04.md) | S03: executable Workflow and branch contract; S01: G3 proof | Blocked | G3 proof green in S01; awaits S03. |
 | S05 | [Bounded execution and durable events](S05.md) | S03: compiled nodes; S02: schemas/limits | Planned | Host-boundary fault tests pending. |
-| S06 | [Wait, resume and crash classification](S06.md) | S04: repeat paths; S05: committed event/operation boundary; S01: G4 proof | Blocked | Multi-wait/checkpoint barrier and compatibility proof pending. |
+| S06 | [Wait, resume and crash classification](S06.md) | S04: repeat paths; S05: committed event/operation boundary; S01: G4 proof | Blocked | G4 proof green in S01 (address-stable resume, staged checkpoint, reopen); awaits S04/S05. |
 | S07 | [Draft and publication service](S07.md) | S02: normalized artifacts/digests; S03: catalog verification | Planned | Repository CAS/concurrent publication evidence pending. |
 | S08 | [App SQLite authority and dispatcher](S08.md) | S06: recovery contract; S07: version repository | Planned | Pure-Go driver and migrations must be selected/verified. |
 | S09 | [App auth, HTTP and catalog](S09.md) | S08: durable App admission; S07: publication API | Planned | HTTP/SSE/security and real provider evidence pending. |
@@ -107,4 +107,4 @@ flowchart TD
 | G10 | S09–S11, S13 |
 | G11 | S08, S09, S13 |
 
-Environment at design time: `node v24.19.0` and `pnpm 11.25.0` available; `go` missing, so every Go command below is an **execution instruction**, not an already-passed check. No credentials or live providers were used. A failed Eino proof, inability to make ViVy checkpoint visibility atomic, or host-authority incompatibility stops the affected successors and returns to architecture review. Changes to public API, scope, or distribution namespace need the owner to review the concrete change. Next executable step after plan review is S01, followed by evidence-based status updates in this index.
+Environment at design time: `node v24.19.0` and `pnpm 11.25.0` available; `go` missing, so every Go command below is an **execution instruction**, not an already-passed check. No credentials or live providers were used. A failed Eino proof, inability to make ViVy checkpoint visibility atomic, or host-authority incompatibility stops the affected successors and returns to architecture review. Changes to public API, scope, or distribution namespace need the owner to review the concrete change. Next executable step is S02, followed by evidence-based status updates in this index.
