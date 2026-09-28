@@ -161,6 +161,19 @@ func (m *MemoryRepository) PublishCAS(_ context.Context, workflowID, expectedETa
 	return rev, nil
 }
 
+// Archive marks a workflow draft archived: no new publish, but
+// referenced revisions remain readable (S07 global constraint).
+func (m *MemoryRepository) Archive(_ context.Context, workflowID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d, ok := m.drafts[workflowID]
+	if !ok {
+		return notFound(workflowID)
+	}
+	d.Archived = true
+	return nil
+}
+
 func (m *MemoryRepository) GetRevision(_ context.Context, workflowID string, revision uint64) (Revision, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
