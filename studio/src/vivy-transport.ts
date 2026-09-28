@@ -7,6 +7,7 @@
 
 import {
   TransportError,
+  type EventPage,
   type EventSubscription,
   type StudioTransport,
 } from "./transport";
@@ -53,7 +54,10 @@ export class VivyTransport implements StudioTransport {
     return this.call<NodeDescriptor[]>("nodeTypes");
   }
   listWorkflows(cursor?: string) {
-    return this.call("listWorkflows", { cursor });
+    return this.call<{
+      items: { workflow: string; revision?: number }[];
+      next_cursor: string | null;
+    }>("listWorkflows", { cursor });
   }
   loadDraft(id: string) {
     return this.call<DraftView>("loadDraft", { workflow: id });
@@ -62,7 +66,10 @@ export class VivyTransport implements StudioTransport {
     return this.call<DraftView>("saveDraft", { workflow: id, artifact, etag });
   }
   validate(id: string, etag: string) {
-    return this.call("validate", { workflow: id, etag });
+    return this.call<{ diagnostics?: ApiError["diagnostics"] }>("validate", {
+      workflow: id,
+      etag,
+    });
   }
   publish(id: string, etag: string) {
     return this.call<RevisionView>("publish", { workflow: id, etag });
@@ -74,7 +81,10 @@ export class VivyTransport implements StudioTransport {
     return this.call<RunView>("startRun", request);
   }
   listRuns(cursor?: string) {
-    return this.call("listRuns", { cursor });
+    return this.call<{ items: RunView[]; next_cursor: string | null }>(
+      "listRuns",
+      { cursor },
+    );
   }
   getRun(id: string) {
     return this.call<RunView>("getRun", { run_id: id });
@@ -86,7 +96,7 @@ export class VivyTransport implements StudioTransport {
     return this.call<RunView>("resumeRun", { run_id: id, answers });
   }
   events(id: string, afterSeq?: number) {
-    return this.call("events", { run_id: id, after: afterSeq });
+    return this.call<EventPage>("events", { run_id: id, after: afterSeq });
   }
   subscribeEvents(
     id: string,
