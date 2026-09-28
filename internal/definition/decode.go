@@ -221,15 +221,21 @@ func asArray(v any) ([]any, bool) {
 }
 
 func asInt(v any) (int64, bool) {
-	n, ok := v.(json.Number)
-	if !ok {
-		return 0, false
+	switch n := v.(type) {
+	case json.Number:
+		i, err := n.Int64()
+		if err != nil {
+			return 0, false
+		}
+		return i, true
+	case int:
+		return int64(n), true
+	case float64:
+		if n == float64(int64(n)) {
+			return int64(n), true
+		}
 	}
-	i, err := n.Int64()
-	if err != nil {
-		return 0, false
-	}
-	return i, true
+	return 0, false
 }
 
 func unknownFields(m map[string]any, allowed map[string]bool, path []string, f *[]Finding) {
