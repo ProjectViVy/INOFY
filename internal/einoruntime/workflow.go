@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -57,6 +58,7 @@ type Program struct {
 	outputs       map[string]map[string]any
 	outputsSchema json.RawMessage
 	nodes         map[string]map[string]any
+	regions       map[string]map[string]map[string]bool
 	limits        Limits
 }
 
@@ -69,6 +71,7 @@ type runState struct {
 	attempts int
 	mu       sync.Mutex
 	decision map[string]string // switch node ID → chosen port
+	executed map[string]bool   // node IDs that acquired an activation
 }
 
 type runStateKey struct{}
@@ -97,6 +100,7 @@ func CompileProgram(ctx context.Context, defDoc map[string]any, types map[string
 	}
 
 	b := &scopeBuilder{types: types}
+	regions, _ := regionIndex(graph)
 	wf, nodes, err := b.buildScope(graph, "/graph")
 	if err != nil {
 		return nil, err
@@ -122,6 +126,7 @@ func CompileProgram(ctx context.Context, defDoc map[string]any, types map[string
 		outputs:       outputs,
 		outputsSchema: outputsSchema,
 		nodes:         nodes,
+		regions:       regions,
 		limits:        limits,
 	}, nil
 }
@@ -141,6 +146,7 @@ func (p *Program) Invoke(ctx context.Context, input json.RawMessage, exec Execut
 		timeout:  time.Duration(p.limits.NodeTimeoutMS) * time.Millisecond,
 		attempts: p.limits.MaxAttemptsPerCall,
 		decision: map[string]string{},
+		executed: map[string]bool{},
 	}
 	ctx = context.WithValue(ctx, runStateKey{}, rs)
 	end, err := p.runnable.Invoke(ctx, map[string]any{"input": packetOf(in)})
@@ -171,7 +177,7 @@ func (p *Program) settle(end map[string]any, rs *runState, runInput any) (json.R
 	}
 	// Nodes on unchosen branches are marked skipped from the recorded
 	// decision log rather than arrival order.
-	diags := skippedDiagnostics(p.nodes, rs.decision)
+	diags := skippedDiagnostics(p.regions, rs)
 	if len(p.outputsSchema) > 0 {
 		if err := definition.ValidateValueJSON(p.outputsSchema, resolved); err != nil {
 			return nil, diags, &Error{Code: ErrSchemaMismatch, Path: "/outputs",
@@ -190,6 +196,9 @@ func (rs *runState) acquire(path string) error {
 		return &Error{Code: ErrBudgetExceeded, Path: path,
 			Message: "activation bound exceeded"}
 	}
+	rs.mu.Lock()
+	rs.executed[pathID(path)] = true
+	rs.mu.Unlock()
 	return nil
 }
 
@@ -508,8 +517,10 @@ func (b *scopeBuilder) wirePreds(nn *compose.WorkflowNode, id string, n map[stri
 		portEdge := e.port != ""
 		entryFromOutside := foreignEntry(id, from, regions)
 		if portEdge || entryFromOutside {
+			// ToField: carry the whole predecessor packet as data with
+			// no activation dependency.
 			nn.AddInputWithOptions(from,
-				[]*compose.FieldMapping{compose.MapFields(from, from)},
+				[]*compose.FieldMapping{compose.ToField(from)},
 				compose.WithNoDirectDependency())
 			continue
 		}
@@ -704,11 +715,39 @@ func isDeadline(err error) bool {
 
 // skippedDiagnostics marks authored nodes inactive after settlement
 // from the recorded switch decisions (§7.2 step 6 — the validated
-// decision log, not arrival order).
-func skippedDiagnostics(nodes map[string]map[string]any, decisions map[string]string) []definition.Finding {
-	// Regions skipped by unchosen ports are computed lazily in branch.go
-	// for T2; skipped diagnostics land there.
-	return nil
+// decision log, not arrival order). A nested switch inside an unchosen
+// port contributes nothing extra: its regions are already inside the
+// outer region.
+func skippedDiagnostics(regions map[string]map[string]map[string]bool, rs *runState) []definition.Finding {
+	var out []definition.Finding
+	seen := map[string]bool{}
+	for _, switchID := range sortedRegionKeys(regions) {
+		chosen, decided := rs.decision[switchID]
+		for _, port := range sortedPortKeys(regions[switchID]) {
+			if decided && port == chosen {
+				continue
+			}
+			for _, member := range sortedMemberKeys(regions[switchID][port]) {
+				if rs.executed[member] || seen[member] {
+					continue
+				}
+				seen[member] = true
+				out = append(out, definition.Finding{
+					Check: "topology", Path: "/graph/nodes/" + member,
+					Code:    "node_skipped",
+					Message: "node not activated by the recorded branch decisions",
+				})
+			}
+		}
+	}
+	return out
+}
+
+func pathID(path string) string {
+	if i := strings.LastIndexByte(path, '/'); i >= 0 {
+		return path[i+1:]
+	}
+	return path
 }
 
 var _ = sort.Strings

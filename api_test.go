@@ -190,3 +190,72 @@ func TestProgramDAGPublic(t *testing.T) {
 		t.Fatalf("mismatched digest run got %v", res.Status)
 	}
 }
+
+func TestStructuredBranchPublic(t *testing.T) {
+	ctx := context.Background()
+	def := inofy.Definition{
+		SchemaVersion: inofy.SchemaVersionV1,
+		Graph: inofy.Graph{
+			Nodes: []inofy.Node{
+				{ID: "sw", Kind: inofy.NodeKindSwitch, Join: "sel",
+					Cases: []inofy.SwitchCase{{
+						Port: "yes",
+						When: inofy.Predicate{
+							Op:    inofy.OpEq,
+							Left:  &inofy.Binding{Source: "input", Pointer: "/v"},
+							Right: &inofy.Binding{Literal: json.RawMessage(`true`)},
+						},
+					}},
+					DefaultPort: "no",
+				},
+				{ID: "yes1", Kind: inofy.NodeKindCall, Type: "inofy.value@1"},
+				{ID: "no1", Kind: inofy.NodeKindCall, Type: "inofy.value@1"},
+				{ID: "sel", Kind: inofy.NodeKindSelect,
+					Candidates: []inofy.SelectCandidate{
+						{Source: "yes1", Pointer: "/v"},
+						{Source: "no1", Pointer: "/v"},
+					}},
+			},
+			Edges: []inofy.Edge{
+				{From: "sw", To: "yes1", Port: "yes"},
+				{From: "sw", To: "no1", Port: "no"},
+				{From: "yes1", To: "sel"},
+				{From: "no1", To: "sel"},
+			},
+			Exits: []string{"sel"},
+			Outputs: map[string]inofy.Binding{
+				"val": {Source: "sel", Pointer: ""},
+			},
+		},
+	}
+	prog := compileTestProgram(t, def)
+	exec := &stubExec{reply: func(c inofy.NodeCall) inofy.NodeReply {
+		if lastPathID(c.Path) == "yes1" {
+			return inofy.NodeReply{Output: json.RawMessage(`{"v":"YES"}`)}
+		}
+		return inofy.NodeReply{Output: json.RawMessage(`{"v":"NO"}`)}
+	}}
+	res, err := prog.Run(ctx, runRequest(prog, json.RawMessage(`{"v": true}`)), inofy.Bindings{Nodes: exec})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.Status != inofy.RunSucceeded {
+		t.Fatalf("status = %s", res.Status)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(res.Outputs, &out); err != nil || out["val"] != "YES" {
+		t.Fatalf("outputs = %v", out)
+	}
+	if !exec.executed("yes1") || exec.executed("no1") {
+		t.Fatalf("wrong region executed: %v", exec.calls)
+	}
+	var sawSkip bool
+	for _, d := range res.Diagnostics {
+		if d.Code == "node_skipped" && d.Path == "/graph/nodes/no1" {
+			sawSkip = true
+		}
+	}
+	if !sawSkip {
+		t.Fatalf("skipped diagnostic missing: %#v", res.Diagnostics)
+	}
+}

@@ -266,6 +266,8 @@ func asNumber(v any) (float64, bool) {
 		return n, true
 	case int64:
 		return float64(n), true
+	case int:
+		return float64(n), true
 	}
 	return 0, false
 }
@@ -293,6 +295,33 @@ func sortStrings(s []string) {
 }
 
 func sortedNodeKeys(m map[string]map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sortStrings(keys)
+	return keys
+}
+
+func sortedPortKeys(m map[string]map[string]bool) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sortStrings(keys)
+	return keys
+}
+
+func sortedRegionKeys(m map[string]map[string]map[string]bool) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sortStrings(keys)
+	return keys
+}
+
+func sortedMemberKeys(m map[string]bool) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
