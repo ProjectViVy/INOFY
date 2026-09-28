@@ -163,6 +163,12 @@ func validateValue(raw json.RawMessage, v any) error {
 	return sch.Validate(v)
 }
 
+// ValidateValueJSON validates one decoded JSON value against a portable
+// schema document. Used at run time for node inputs and graph outputs.
+func ValidateValueJSON(schema json.RawMessage, v any) error {
+	return validateValue(schema, v)
+}
+
 // newDecoderBytes returns a UseNumber decoder for raw JSON bytes.
 func newDecoderBytes(raw []byte) *json.Decoder {
 	dec := json.NewDecoder(bytes.NewReader(raw))

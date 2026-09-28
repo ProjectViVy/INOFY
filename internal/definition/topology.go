@@ -312,6 +312,7 @@ func checkScope(g map[string]any, path string, limits LimitsRef, f *[]Finding) {
 	sv.checkReachability(f)
 	sv.checkDominators()
 	sv.checkDataEdges(f)
+	sv.checkOutputExits(g, f)
 	sv.checkRegions(f)
 }
 
@@ -428,11 +429,27 @@ func (sv *scopeView) checkReachability(f *[]Finding) {
 				Message: "node " + strconv.Quote(id) + " cannot reach a declared exit"})
 		}
 	}
-	// Exits that are themselves unreachable get the same diagnosis via
-	// the loop above; a scope with no resolvable exits is reported once.
+	// A scope with no resolvable exits is reported once.
 	if len(sv.exits) == 0 && len(sv.order) > 0 {
 		*f = append(*f, Finding{Check: "topology", Path: sv.path + "/exits",
 			Code: "no_exit", Message: "graph declares no exit nodes"})
+	}
+}
+
+// checkOutputExits requires output bindings to name declared exits
+// (§4.2): settlement reads exit packets only.
+func (sv *scopeView) checkOutputExits(g map[string]any, f *[]Finding) {
+	outs, ok := asObject(g["outputs"])
+	if !ok {
+		return
+	}
+	for _, k := range sortedKeys(outs) {
+		if src := bindingSource(outs[k]); src != "" && src != "input" && !sv.exits[src] {
+			*f = append(*f, Finding{Check: "topology",
+				Path: sv.path + "/outputs/" + ptrEscape(k), Code: "output_not_exit",
+				Message: "output binding " + strconv.Quote(k) + " names " + strconv.Quote(src) +
+					" which is not a declared exit"})
+		}
 	}
 }
 
