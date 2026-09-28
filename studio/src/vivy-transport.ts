@@ -1,0 +1,104 @@
+// VivyTransport adapts StudioTransport onto the ViVy host RPC bridge
+// (S11 contract). The bridge is injected — the editor package never
+// imports ViVy types; a host supplies `call(method, params)` and an
+// event source. Until S11 lands the bridge shape here is the seam
+// S11 must satisfy; the App adapter (app-transport.ts) is the
+// reference implementation.
+
+import {
+  TransportError,
+  type EventSubscription,
+  type StudioTransport,
+} from "./transport";
+import type {
+  Artifact,
+  ApiError,
+  DraftView,
+  NodeDescriptor,
+  RevisionView,
+  RunEvent,
+  RunView,
+} from "./schema";
+
+export interface HostBridge {
+  call<T>(method: string, params?: unknown): Promise<T>;
+  subscribe(
+    channel: string,
+    params: unknown,
+    onEvent: (data: unknown) => void,
+    onError?: (err: unknown) => void,
+  ): { close(): void };
+}
+
+export class VivyTransport implements StudioTransport {
+  constructor(private rpc: HostBridge) {}
+
+  private async call<T>(method: string, params?: unknown): Promise<T> {
+    try {
+      return await this.rpc.call<T>(`inofy.${method}`, params);
+    } catch (e) {
+      const err = e as { code?: string; message?: string; data?: ApiError };
+      throw new TransportError(0, {
+        code: err.data?.code ?? "rpc_error",
+        message: err.message ?? String(e),
+        diagnostics: err.data?.diagnostics,
+      });
+    }
+  }
+
+  capabilities() {
+    return this.call<Record<string, unknown>>("capabilities");
+  }
+  nodeTypes() {
+    return this.call<NodeDescriptor[]>("nodeTypes");
+  }
+  listWorkflows(cursor?: string) {
+    return this.call("listWorkflows", { cursor });
+  }
+  loadDraft(id: string) {
+    return this.call<DraftView>("loadDraft", { workflow: id });
+  }
+  saveDraft(id: string, artifact: Artifact, etag: string | null) {
+    return this.call<DraftView>("saveDraft", { workflow: id, artifact, etag });
+  }
+  validate(id: string, etag: string) {
+    return this.call("validate", { workflow: id, etag });
+  }
+  publish(id: string, etag: string) {
+    return this.call<RevisionView>("publish", { workflow: id, etag });
+  }
+  getRevision(id: string, revision: number) {
+    return this.call<RevisionView>("getRevision", { workflow: id, revision });
+  }
+  startRun(request: { workflow: string; revision?: number; draft_etag?: string; input?: unknown }) {
+    return this.call<RunView>("startRun", request);
+  }
+  listRuns(cursor?: string) {
+    return this.call("listRuns", { cursor });
+  }
+  getRun(id: string) {
+    return this.call<RunView>("getRun", { run_id: id });
+  }
+  cancelRun(id: string) {
+    return this.call<RunView>("cancelRun", { run_id: id });
+  }
+  resumeRun(id: string, answers: Record<string, unknown>) {
+    return this.call<RunView>("resumeRun", { run_id: id, answers });
+  }
+  events(id: string, afterSeq?: number) {
+    return this.call("events", { run_id: id, after: afterSeq });
+  }
+  subscribeEvents(
+    id: string,
+    afterSeq: number | undefined,
+    onEvent: (e: RunEvent) => void,
+    onError?: (err: unknown) => void,
+  ): EventSubscription {
+    return this.rpc.subscribe(
+      "inofy.events",
+      { run_id: id, after: afterSeq },
+      (d) => onEvent(d as RunEvent),
+      onError,
+    );
+  }
+}
