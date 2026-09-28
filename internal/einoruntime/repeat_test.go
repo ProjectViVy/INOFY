@@ -232,3 +232,196 @@ func TestRepeatStateAndLimit(t *testing.T) {
 	})
 }
 
+// TestRepeatNestedBranchIdentity (S04 task 2): a switch inside the
+// body converges per iteration, dormant ports never copy stale state,
+// cancellation propagates, and logical keys are
+// <container>/<zero-based-iteration>/<node> while retries keep theirs.
+func TestRepeatNestedBranchIdentity(t *testing.T) {
+	ctx := context.Background()
+	types := map[string]einoruntime.TypeInfo{"t@1": {ImplementationID: "impl-1"}}
+
+	t.Run("switch inside body converges per iteration", func(t *testing.T) {
+		doc := repeatDoc(map[string]any{
+			"nodes": []any{
+				switchNodeT("bsw", map[string]any{
+					"acc": map[string]any{"source": "input", "pointer": "/acc"},
+				}, []any{
+					caseT("low", map[string]any{
+						"op":    "lt",
+						"left":  map[string]any{"source": "input", "pointer": "/acc"},
+						"right": map[string]any{"literal": 2},
+					}),
+				}, "high", "bsel"),
+				callNodeT("lo", "t@1", nil),
+				callNodeT("hi", "t@1", nil),
+				selectNodeT("bsel", []any{candT("lo", "/acc"), candT("hi", "/acc")}, nil),
+			},
+			"edges": []any{
+				portEdgeT("bsw", "lo", "low"),
+				portEdgeT("bsw", "hi", "high"),
+				edgeT("lo", "bsel"), edgeT("hi", "bsel"),
+			},
+			"exits": []any{"bsel"},
+			"outputs": map[string]any{
+				"acc": map[string]any{"source": "bsel", "pointer": ""},
+			},
+		}, 8, map[string]any{
+			"op":    "gte",
+			"left":  map[string]any{"source": "bsel", "pointer": ""},
+			"right": map[string]any{"literal": 3},
+		})
+		var loRuns, hiRuns int
+		var mu sync.Mutex
+		prog, err := einoruntime.CompileProgram(ctx, doc, types, einoruntime.Limits{MaxActivations: 256})
+		if err != nil {
+			t.Fatalf("compile: %v", err)
+		}
+		_, _, err = prog.Invoke(ctx, json.RawMessage(`{}`), func(ctx context.Context, c einoruntime.Call) (json.RawMessage, error) {
+			// iter0: state acc=0 → low → lo emits 1. iter1: acc=1 → low
+			// → lo emits 2. iter2: acc=2 → high → hi emits 99 → until.
+			id := nodeID(c.Path)
+			mu.Lock()
+			defer mu.Unlock()
+			switch id {
+			case "lo":
+				loRuns++
+				bs, _ := json.Marshal(map[string]any{"acc": loRuns, "r": "lo"})
+				return bs, nil
+			case "hi":
+				hiRuns++
+				return json.RawMessage(`{"acc": 99, "r": "hi"}`), nil
+			}
+			return json.RawMessage(`{"n": 0}`), nil
+		})
+		if err != nil {
+			t.Fatalf("invoke: %v", err)
+		}
+		// lo runs on the first two iterations; hi only on the last,
+		// and the dormant port never copied stale state.
+		if loRuns != 2 || hiRuns != 1 {
+			t.Fatalf("lo=%d hi=%d, want lo=2 hi=1", loRuns, hiRuns)
+		}
+	})
+
+	t.Run("iteration keys distinct, retries keep key", func(t *testing.T) {
+		doc := repeatDoc(map[string]any{
+			"nodes": []any{
+				callNodeT("step", "t@1", map[string]any{
+					"acc": map[string]any{"source": "input", "pointer": "/acc"},
+				}),
+			},
+			"edges": []any{},
+			"exits": []any{"step"},
+			"outputs": map[string]any{
+				"acc": map[string]any{"source": "step", "pointer": "/acc"},
+			},
+		}, 4, map[string]any{
+			"op":    "gte",
+			"left":  map[string]any{"source": "step", "pointer": "/acc"},
+			"right": map[string]any{"literal": 2},
+		})
+		var mu sync.Mutex
+		var paths []string
+		var attempts []int
+		var failedOnce bool
+		exec := func(ctx context.Context, c einoruntime.Call) (json.RawMessage, error) {
+			if strings.HasSuffix(c.Path, "/step") {
+				mu.Lock()
+				paths = append(paths, c.Path)
+				attempts = append(attempts, c.Attempt)
+				if !failedOnce {
+					failedOnce = true
+					mu.Unlock()
+					return nil, errors.New("transient")
+				}
+				var in map[string]any
+				_ = json.Unmarshal(c.Input, &in)
+				acc, _ := in["acc"].(float64)
+				mu.Unlock()
+				bs, _ := json.Marshal(map[string]any{"acc": acc + 1})
+				return bs, nil
+			}
+			return json.RawMessage(`{"n": 0}`), nil
+		}
+		// retry on the node: max_attempts 2.
+		g := doc["graph"].(map[string]any)
+		bodyNodes := g["nodes"].([]any)[1].(map[string]any)["body"].(map[string]any)["nodes"].([]any)
+		bodyNodes[0].(map[string]any)["retry"] = map[string]any{"max_attempts": 2, "delay_ms": 1}
+		prog, err := einoruntime.CompileProgram(ctx, doc, types, einoruntime.Limits{MaxActivations: 256})
+		if err != nil {
+			t.Fatalf("compile: %v", err)
+		}
+		_, _, err = prog.Invoke(ctx, json.RawMessage(`{}`), exec)
+		if err != nil {
+			t.Fatalf("invoke: %v", err)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		// Iteration 0 attempt 1 fails then attempt 2 succeeds (acc 0→1);
+		// iteration 1 emits acc=2 → until. Two distinct logical keys.
+		if len(paths) != 3 {
+			t.Fatalf("paths %v", paths)
+		}
+		if paths[0] != paths[1] || attempts[0] != 1 || attempts[1] != 2 {
+			t.Fatalf("retry changed logical key: %v %v", paths, attempts)
+		}
+		if !strings.Contains(paths[0], "/0/step") {
+			t.Fatalf("iteration 0 path = %q", paths[0])
+		}
+		if !strings.Contains(paths[2], "/1/step") {
+			t.Fatalf("iteration 1 path = %q", paths[2])
+		}
+	})
+
+	t.Run("cancellation stops new work after a completed child", func(t *testing.T) {
+		doc := repeatDoc(map[string]any{
+			"nodes": []any{
+				callNodeT("step", "t@1", map[string]any{
+					"acc": map[string]any{"source": "input", "pointer": "/acc"},
+				}),
+			},
+			"edges": []any{},
+			"exits": []any{"step"},
+			"outputs": map[string]any{
+				"acc": map[string]any{"source": "step", "pointer": "/acc"},
+			},
+		}, 8, map[string]any{
+			"op":    "gte",
+			"left":  map[string]any{"source": "step", "pointer": "/acc"},
+			"right": map[string]any{"literal": 100},
+		})
+		runCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		var completed int
+		var mu sync.Mutex
+		exec := func(ctx context.Context, c einoruntime.Call) (json.RawMessage, error) {
+			if strings.HasSuffix(c.Path, "/step") {
+				mu.Lock()
+				completed++
+				n := completed
+				mu.Unlock()
+				if n == 2 {
+					cancel()
+				}
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				return json.RawMessage(`{"acc": 1}`), nil
+			}
+			return json.RawMessage(`{"n": 0}`), nil
+		}
+		prog, err := einoruntime.CompileProgram(ctx, doc, types, einoruntime.Limits{MaxActivations: 256})
+		if err != nil {
+			t.Fatalf("compile: %v", err)
+		}
+		_, _, err = prog.Invoke(runCtx, json.RawMessage(`{}`), exec)
+		if err == nil {
+			t.Fatal("cancelled run returned success")
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if completed > 3 {
+			t.Fatalf("work continued after cancel: %d body calls", completed)
+		}
+	})
+}
