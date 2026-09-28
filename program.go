@@ -99,6 +99,9 @@ func (p *Program) Run(ctx context.Context, request RunRequest, bindings Bindings
 			case RunAdmitted:
 				// Admitted but never started: continue normally —
 				// the admission commit below replays idempotently.
+			case "queued", "claimed":
+				// App admission placeholder rows (§11.2): the first
+				// Expected="" commit adopts them atomically.
 			default:
 				return RunResult{Status: st.Status}, &Error{
 					Code:    ErrRevisionConflict,

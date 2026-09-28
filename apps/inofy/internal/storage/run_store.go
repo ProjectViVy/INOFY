@@ -44,16 +44,30 @@ func (s *Store) Commit(ctx context.Context, ref inofy.ExecutionRef, change inofy
 	if err != nil && !notAdmitted {
 		return inofy.Receipt{}, err
 	}
+	// A queued/claimed admission placeholder row is not admitted: the
+	// first Expected="" commit adopts it in this transaction (§11.2).
+	if status == "queued" || status == "claimed" {
+		notAdmitted = true
+	}
 	if notAdmitted && change.Transition.Expected != "" {
 		return inofy.Receipt{}, &inofy.Error{Code: inofy.ErrRevisionConflict, Path: ref.RunID,
 			Message: "run is not admitted"}
 	}
 	if notAdmitted {
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO runs (run_id, program_digest, status, writer_epoch)
-			 VALUES (?, ?, ?, ?)`,
-			ref.RunID, ref.ProgramDigest, string(change.Transition.Target), ref.Epoch); err != nil {
-			return inofy.Receipt{}, err
+		if status == "queued" || status == "claimed" {
+			// Adopt the dispatcher's placeholder row.
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE runs SET program_digest = ?, status = ?, writer_epoch = ? WHERE run_id = ?`,
+				ref.ProgramDigest, string(change.Transition.Target), ref.Epoch, ref.RunID); err != nil {
+				return inofy.Receipt{}, err
+			}
+		} else {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO runs (run_id, program_digest, status, writer_epoch)
+				 VALUES (?, ?, ?, ?)`,
+				ref.RunID, ref.ProgramDigest, string(change.Transition.Target), ref.Epoch); err != nil {
+				return inofy.Receipt{}, err
+			}
 		}
 		status = string(change.Transition.Expected)
 		epoch = int64(ref.Epoch)
@@ -83,7 +97,7 @@ func (s *Store) Commit(ctx context.Context, ref inofy.ExecutionRef, change inofy
 		return inofy.Receipt{}, &inofy.Error{Code: inofy.ErrStaleWriter, Path: ref.RunID,
 			Message: "writer epoch mismatch"}
 	}
-	if programDig.Valid && programDig.String != ref.ProgramDigest {
+	if !notAdmitted && programDig.Valid && programDig.String != ref.ProgramDigest {
 		return inofy.Receipt{}, &inofy.Error{Code: inofy.ErrCheckpointIncompatible, Path: ref.RunID,
 			Message: "program digest mismatch"}
 	}
