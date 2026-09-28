@@ -23,7 +23,10 @@ type fixture struct {
 	h       http.Handler
 	sid     string
 	doAuth  *auth.Service
+	store   *storage.Store
 }
+
+func (f *fixture) fixtureStore() *storage.Store { return f.store }
 
 func newFixture(t *testing.T) *fixture {
 	dir := t.TempDir()
@@ -57,7 +60,7 @@ func newFixture(t *testing.T) *fixture {
 		Definitions: svc,
 		Catalog:     cat,
 	})
-	return &fixture{t: t, svc: svc, h: h, sid: sid, doAuth: a}
+	return &fixture{t: t, svc: svc, h: h, sid: sid, doAuth: a, store: s}
 }
 
 func (f *fixture) do(method, path, body string, hdr map[string]string) *httptest.ResponseRecorder {

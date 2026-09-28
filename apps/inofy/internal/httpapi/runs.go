@@ -156,16 +156,19 @@ func (h *handler) postResume(w http.ResponseWriter, r *http.Request) {
 		mapErr(w, err)
 		return
 	}
-	prog, err := h.d.Dispatch.ProgramFor(r.Context(), id)
+	prog, bindings, req, err := h.d.Dispatch.ProgramFor(r.Context(), id)
 	if err != nil {
 		mapErr(w, err)
 		return
 	}
-	key := r.Header.Get("Idempotency-Key")
-	res, err := prog.Run(r.Context(), inofy.RunRequest{
-		Ref:    st.Ref,
-		Resume: &inofy.ResumeRequest{IdempotencyKey: key, Answers: body.Answers},
-	}, inofy.Bindings{})
+	// The admitted input rides along — a suspend during resume
+	// recomputes the checkpoint input digest against it.
+	req.Ref = st.Ref
+	req.Resume = &inofy.ResumeRequest{
+		IdempotencyKey: r.Header.Get("Idempotency-Key"),
+		Answers:        body.Answers,
+	}
+	res, err := prog.Run(r.Context(), req, bindings)
 	if err != nil {
 		mapErr(w, err)
 		return

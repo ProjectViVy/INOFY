@@ -212,7 +212,9 @@ func (s *Store) Load(ctx context.Context, runID string) (inofy.RecoveryState, er
 		`SELECT COALESCE(usage_json, '') FROM runs WHERE run_id = ?`, runID).Scan(&usageJSON); err == nil {
 		unmarshalInto(usageJSON, &st.Usage)
 	}
-	if cpJSON.Valid && len(cpPayload) > 0 {
+	// An envelope restores whenever checkpoint_json committed — the
+	// payload itself may legitimately serialize empty.
+	if cpJSON.Valid && cpJSON.String != "" {
 		var env inofy.CheckpointEnvelope
 		if err := json.Unmarshal([]byte(cpJSON.String), &env); err != nil {
 			return inofy.RecoveryState{}, err

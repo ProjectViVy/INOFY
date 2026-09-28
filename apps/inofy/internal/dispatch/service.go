@@ -238,9 +238,10 @@ func (s *Service) Cancel(ctx context.Context, runID string) error {
 	return nil
 }
 
-// ProgramFor rebuilds the compiled program for an admitted run —
-// used by the resume path to continue from the committed checkpoint.
-func (s *Service) ProgramFor(_ context.Context, runID string) (*inofy.Program, error) {
-	prog, _, _, err := s.factory(runID)
-	return prog, err
+// ProgramFor rebuilds the compiled program, bindings and admitted
+// request for a run — the resume path needs the live executor to
+// finish nodes the claim unblocks and the original input to keep
+// checkpoint identity checks intact.
+func (s *Service) ProgramFor(_ context.Context, runID string) (*inofy.Program, inofy.Bindings, inofy.RunRequest, error) {
+	return s.factory(runID)
 }

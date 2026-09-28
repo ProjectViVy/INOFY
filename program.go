@@ -437,9 +437,10 @@ func (p *Program) resume(ctx context.Context, request RunRequest, bindings Bindi
 		[]Event{{Kind: EventRunResumed, Data: claim}}, nil); err != nil {
 		return RunResult{Status: RunFailed}, err
 	}
-	// Re-stage the committed checkpoint under the same ID so Eino
-	// reloads the exact payload; nothing else may produce state.
-	cpID := request.Ref.RunID + "/" + itoa(env.ContinuationGeneration)
+	// Re-stage the committed checkpoint under the new generation's ID
+	// so Eino reloads the exact payload and suspends again under the
+	// same key the envelope records (cpID == RunID/j.gen).
+	cpID := request.Ref.RunID + "/" + itoa(gen)
 	p.rt.Staging().Stage(cpID, env.Payload)
 	exec := executorAdapter(j, bindings.Nodes)
 	res, err := p.rt.Invoke(ctx, request.Input, exec,
