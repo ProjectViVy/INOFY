@@ -64,14 +64,14 @@ func runtimePath(in map[string]any, docPath, nodeID string) string {
 // against it, and either emits the final packet (done) or the next
 // state packet. Reaching max_iterations without until produces
 // iteration_limit (or the declared on_error fallback).
-func (b *scopeBuilder) buildRepeat(id, path string, n map[string]any) (compose.AnyGraph, error) {
+func (b *scopeBuilder) buildRepeat(id, path string, n map[string]any) (compose.AnyGraph, int, error) {
 	if b.containerDepth > 0 {
-		return nil, &Error{Code: ErrInvalidDefinition, Path: path,
+		return nil, 0, &Error{Code: ErrInvalidDefinition, Path: path,
 			Message: "repeat nesting beyond one level"}
 	}
 	maxIter := asIntField(n["max_iterations"])
 	if maxIter <= 0 {
-		return nil, &Error{Code: ErrInvalidDefinition, Path: path + "/max_iterations",
+		return nil, 0, &Error{Code: ErrInvalidDefinition, Path: path + "/max_iterations",
 			Message: "repeat requires max_iterations >= 1"}
 	}
 	initial, _ := n["initial"].(map[string]any)
@@ -80,18 +80,18 @@ func (b *scopeBuilder) buildRepeat(id, path string, n map[string]any) (compose.A
 	if stateSchema != nil {
 		raw, err := json.Marshal(stateSchema)
 		if err != nil {
-			return nil, &Error{Code: ErrInvalidDefinition, Path: path + "/state_schema", Err: err}
+			return nil, 0, &Error{Code: ErrInvalidDefinition, Path: path + "/state_schema", Err: err}
 		}
 		schemaRaw = raw
 	}
 	until, _ := n["until"].(map[string]any)
 	if until == nil {
-		return nil, &Error{Code: ErrInvalidDefinition, Path: path + "/until",
+		return nil, 0, &Error{Code: ErrInvalidDefinition, Path: path + "/until",
 			Message: "repeat requires an until predicate"}
 	}
 	bodyDoc, _ := n["body"].(map[string]any)
 	if bodyDoc == nil {
-		return nil, &Error{Code: ErrInvalidDefinition, Path: path + "/body",
+		return nil, 0, &Error{Code: ErrInvalidDefinition, Path: path + "/body",
 			Message: "repeat requires an inline body graph"}
 	}
 	outputs, _ := bodyDoc["outputs"].(map[string]any)
@@ -102,7 +102,7 @@ func (b *scopeBuilder) buildRepeat(id, path string, n map[string]any) (compose.A
 	inner := &scopeBuilder{types: b.types, containerDepth: b.containerDepth + 1}
 	bodyWf, _, err := inner.buildScope(bodyDoc, path+"/body")
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	g := compose.NewGraph[map[string]any, map[string]any](
@@ -134,10 +134,10 @@ func (b *scopeBuilder) buildRepeat(id, path string, n map[string]any) (compose.A
 				}
 				return out, nil
 			})); err != nil {
-		return nil, &Error{Code: ErrInvalidDefinition, Path: path, Err: err, Message: "repeat init"}
+		return nil, 0, &Error{Code: ErrInvalidDefinition, Path: path, Err: err, Message: "repeat init"}
 	}
 	if err := g.AddGraphNode("body", bodyWf); err != nil {
-		return nil, &Error{Code: ErrInvalidDefinition, Path: path + "/body", Err: err}
+		return nil, 0, &Error{Code: ErrInvalidDefinition, Path: path + "/body", Err: err}
 	}
 
 	// ctl: after each completed body iteration. The pre-handler injects
@@ -198,17 +198,17 @@ func (b *scopeBuilder) buildRepeat(id, path string, n map[string]any) (compose.A
 				}
 				return out, nil
 			})); err != nil {
-		return nil, &Error{Code: ErrInvalidDefinition, Path: path, Err: err, Message: "repeat ctl"}
+		return nil, 0, &Error{Code: ErrInvalidDefinition, Path: path, Err: err, Message: "repeat ctl"}
 	}
 
 	if err := g.AddEdge(compose.START, "init"); err != nil {
-		return nil, &Error{Code: ErrInvalidDefinition, Path: path, Err: err}
+		return nil, 0, &Error{Code: ErrInvalidDefinition, Path: path, Err: err}
 	}
 	if err := g.AddEdge("init", "body"); err != nil {
-		return nil, &Error{Code: ErrInvalidDefinition, Path: path, Err: err}
+		return nil, 0, &Error{Code: ErrInvalidDefinition, Path: path, Err: err}
 	}
 	if err := g.AddEdge("body", "ctl"); err != nil {
-		return nil, &Error{Code: ErrInvalidDefinition, Path: path, Err: err}
+		return nil, 0, &Error{Code: ErrInvalidDefinition, Path: path, Err: err}
 	}
 	if err := g.AddBranch("ctl", compose.NewGraphBranch(
 		func(ctx context.Context, in map[string]any) (string, error) {
@@ -218,9 +218,12 @@ func (b *scopeBuilder) buildRepeat(id, path string, n map[string]any) (compose.A
 			}
 			return "body", nil
 		}, map[string]bool{"body": true, compose.END: true})); err != nil {
-		return nil, &Error{Code: ErrInvalidDefinition, Path: path, Err: err}
+		return nil, 0, &Error{Code: ErrInvalidDefinition, Path: path, Err: err}
 	}
-	return g, nil
+	// Eino bounds cyclic-graph execution by steps: budget one init,
+	// per-iteration body+ctl and a margin (§7.4 semantics still bound
+	// by max_iterations — this is the mechanical ceiling).
+	return g, maxIter*4 + 8, nil
 }
 
 // asIntField reads a numeric field decoded via UseNumber or a native

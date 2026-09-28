@@ -40,7 +40,7 @@ type runJournal struct {
 	store RunStore
 	gen   int // continuation generation; 0 until S06 checkpoints
 
-	ord uint64 // commit ordinal counter
+	ord atomic.Uint64 // commit ordinal counter
 
 	permits  chan struct{} // run-shared leaf effect permits
 	inLimit  int64         // MaxNodeInputBytes
@@ -80,8 +80,8 @@ func newRunJournal(ref ExecutionRef, store RunStore, lim Limits) *runJournal {
 // commitID is stable across redelivery: run, generation, node path,
 // attempt and a monotonically assigned transition ordinal (§8.2).
 func (j *runJournal) commitID(path string, attempt int) string {
-	j.ord++
-	return fmt.Sprintf("%s/%d/%s/%d/%d", j.ref.RunID, j.gen, path, attempt, j.ord)
+	ord := j.ord.Add(1)
+	return fmt.Sprintf("%s/%d/%s/%d/%d", j.ref.RunID, j.gen, path, attempt, ord)
 }
 
 // commit sends one atomic change through the store on a bounded
@@ -246,6 +246,10 @@ func (j *runJournal) executeCall(ctx context.Context, exec NodeExecutor,
 	_ = j.commit(ctx, c.Path, 0,
 		StateTransition{Expected: RunRunning, Target: RunRunning},
 		[]Event{{Kind: EventNodeFailed, Path: c.Path}}, nil)
+	var ie *Error
+	if errors.As(lastErr, &ie) {
+		return nil, lastErr
+	}
 	return nil, &Error{Code: ErrNodeFailed, Path: c.Path, Err: lastErr,
 		Message: "node execution failed"}
 }

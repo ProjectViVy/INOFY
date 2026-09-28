@@ -224,11 +224,12 @@ func (b *scopeBuilder) buildScope(g map[string]any, path string) (*compose.Workf
 		nodePath := path + "/nodes/" + id
 		var nn *compose.WorkflowNode
 		if kind == "repeat" {
-			sub, err := b.buildRepeat(id, nodePath, n)
+			sub, maxSteps, err := b.buildRepeat(id, nodePath, n)
 			if err != nil {
 				return nil, nil, err
 			}
-			nn = wf.AddGraphNode(id, sub)
+			nn = wf.AddGraphNode(id, sub,
+				compose.WithGraphCompileOptions(compose.WithMaxRunSteps(maxSteps)))
 		} else {
 			lam, err := b.nodeLambda(id, nodePath, n)
 			if err != nil {
@@ -347,7 +348,7 @@ func (b *scopeBuilder) callLambda(id, path string, n map[string]any) (*compose.L
 		}
 		var onErr json.RawMessage
 		if hasOnError {
-			if lit, ok := onError["literal"]; ok {
+			if lit, ok := onError["value"]; ok {
 				raw, merr := json.Marshal(lit)
 				if merr != nil {
 					return nil, &Error{Code: ErrInvalidDefinition, Path: path,
