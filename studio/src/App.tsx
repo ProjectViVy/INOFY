@@ -1,181 +1,249 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+// 应用根：会话门 → 外壳 → 页面。数据在根上持有一份（工作流列表、
+// 运行列表、目录），页面只消费与请求刷新；路由是纯哈希，地址即状态，
+// 刷新与深链都由浏览器兜底。
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type {
+  NodeDescriptor,
+  RunSummary,
+  WorkflowSummary,
+} from "./schema";
 import { TransportError, type StudioTransport } from "./transport";
-import type { Artifact, DraftView, NodeDescriptor } from "./schema";
-import { Editor } from "./Editor";
-import { RunView } from "./RunView";
-import { t, setLocale, getLocale, type Locale } from "./i18n";
+import { Shell, type ConnState } from "./components/Shell";
+import { Login, type SessionAuth } from "./components/Login";
+import { Loading } from "./components/Ui";
+import { WorkflowsPage } from "./pages/WorkflowsPage";
+import { EditorPage } from "./pages/EditorPage";
+import { RunsPage } from "./pages/RunsPage";
+import { SettingsPage } from "./pages/SettingsPage";
+import { useRoute } from "./router";
+
+export interface SessionAuthFull extends SessionAuth {
+  logout(): Promise<void>;
+}
 
 interface Props {
   transport: StudioTransport;
-  workflowId: string;
+  auth?: SessionAuthFull;
 }
 
-// One workflow's draft surface. The server stays the authority:
-// save/publish ride the draft ETag; a stale ETag is surfaced as a
-// conflict while the user's edited artifact is preserved untouched.
-export function App({ transport, workflowId }: Props) {
-  const [draft, setDraft] = useState<DraftView | null>(null);
-  const [artifact, setArtifact] = useState<Artifact | null>(null);
-  const [dirty, setDirty] = useState(false);
-  const [conflict, setConflict] = useState<string | null>(null);
-  const [diags, setDiags] = useState<unknown>(null);
-  const [catalog, setCatalog] = useState<NodeDescriptor[]>([]);
-  const [runId, setRunId] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const past = useRef<Artifact[]>([]);
-  const future = useRef<Artifact[]>([]);
-  // Editor owns its canvas while the user edits; undo swaps the
-  // artifact, so bump this key to remount the canvas from it.
-  const [canvasKey, setCanvasKey] = useState(0);
+type Session = "checking" | "in" | "out";
 
-  useEffect(() => {
-    void transport.nodeTypes().then(setCatalog);
-    void transport.loadDraft(workflowId).then((d) => {
-      setDraft(d);
-      setArtifact(d.artifact);
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workflowId]);
+function errLine(e: unknown): string {
+  if (e instanceof TransportError) return `${e.code} · ${e.message}`;
+  return e instanceof Error ? e.message : String(e);
+}
 
-  const edit = useCallback(
-    (a: Artifact) => {
-      if (artifact) past.current.push(artifact);
-      future.current = [];
-      setArtifact(a);
-      setDirty(true);
+function unauthenticated(e: unknown): boolean {
+  return e instanceof TransportError && (e.status === 401 || e.status === 403);
+}
+
+export function App({ transport, auth }: Props) {
+  const route = useRoute();
+  const [session, setSession] = useState<Session>("checking");
+  const [caps, setCaps] = useState<Record<string, unknown> | null>(null);
+  const [backendErr, setBackendErr] = useState<string | null>(null);
+  const [nodeTypes, setNodeTypes] = useState<NodeDescriptor[] | null>(null);
+  const [workflows, setWorkflows] = useState<WorkflowSummary[] | null>(null);
+  const [workflowsErr, setWorkflowsErr] = useState<string | null>(null);
+  const [runs, setRuns] = useState<RunSummary[] | null>(null);
+  const [runsErr, setRunsErr] = useState<string | null>(null);
+  const [loggingOut, setLoggingOut] = useState(false);
+
+  const origin = useMemo(() => {
+    const o = window.location.origin;
+    return o === "null" || o === "" ? "本机" : o;
+  }, []);
+
+  const schemaVersion =
+    typeof caps?.schema_version === "string" ? caps.schema_version : undefined;
+  const features = useMemo(() => {
+    const f = caps?.features;
+    return Array.isArray(f) ? f.filter((x): x is string => typeof x === "string") : [];
+  }, [caps]);
+
+  const conn: ConnState = {
+    ok: session === "in",
+    origin,
+    ...(schemaVersion ? { schemaVersion } : {}),
+  };
+
+  const refreshWorkflows = useCallback(
+    async (silent = false) => {
+      try {
+        const page = await transport.listWorkflows();
+        setWorkflows(page.items);
+        setWorkflowsErr(null);
+      } catch (e) {
+        if (unauthenticated(e)) {
+          setSession("out");
+          return;
+        }
+        if (!silent) setWorkflowsErr(errLine(e));
+      }
     },
-    [artifact],
+    [transport],
   );
 
-  // Local undo/redo — never calls the server.
+  const refreshRuns = useCallback(
+    async (silent = false) => {
+      try {
+        const page = await transport.listRuns();
+        setRuns(page.items);
+        setRunsErr(null);
+      } catch (e) {
+        if (unauthenticated(e)) {
+          setSession("out");
+          return;
+        }
+        if (!silent) setRunsErr(errLine(e));
+      }
+    },
+    [transport],
+  );
+
+  const refreshCatalog = useCallback(async () => {
+    try {
+      const types = await transport.nodeTypes();
+      setNodeTypes(types);
+    } catch (e) {
+      if (!unauthenticated(e)) setWorkflowsErr(errLine(e));
+      else setSession("out");
+    }
+  }, [transport]);
+
+  const bootstrap = useCallback(async () => {
+    setSession("checking");
+    setBackendErr(null);
+    try {
+      const c = await transport.capabilities();
+      setCaps(c);
+      setSession("in");
+    } catch (e) {
+      setCaps(null);
+      // 未认证只是「还没登录」，不是后端故障。
+      setBackendErr(unauthenticated(e) ? null : errLine(e));
+      setSession("out");
+    }
+  }, [transport]);
+
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "z") return;
-      e.preventDefault();
-      if (e.shiftKey) {
-        const next = future.current.pop();
-        if (next && artifact) {
-          past.current.push(artifact);
-          setArtifact(next);
-          setCanvasKey((k) => k + 1);
-        }
-      } else {
-        const prev = past.current.pop();
-        if (prev && artifact) {
-          future.current.push(artifact);
-          setArtifact(prev);
-          setCanvasKey((k) => k + 1);
-        }
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [artifact]);
+    void bootstrap();
+  }, [bootstrap]);
 
-  const save = async () => {
-    if (!artifact || !draft) return;
-    setErr(null);
+  useEffect(() => {
+    if (session !== "in") return;
+    void refreshCatalog();
+    void refreshWorkflows();
+    void refreshRuns();
+    const id = window.setInterval(() => void refreshRuns(true), 10_000);
+    return () => window.clearInterval(id);
+  }, [session, refreshCatalog, refreshWorkflows, refreshRuns]);
+
+  const logout = async () => {
+    if (!auth) return;
+    setLoggingOut(true);
     try {
-      const first = draft.etag === "";
-      const saved = await transport.saveDraft(
-        workflowId,
-        artifact,
-        first ? null : draft.etag,
-      );
-      setDraft(saved);
-      setDirty(false);
-      setConflict(null);
-    } catch (e) {
-      // Stale ETag: keep the user's artifact, surface the conflict.
-      if (e instanceof TransportError && (e.status === 412 || e.status === 409)) {
-        setConflict(e.message);
-      } else {
-        setErr(e instanceof Error ? e.message : String(e));
-      }
+      await auth.logout();
+    } catch {
+      // 会话可能在服务端已失效：本地一样回到登录门。
+    } finally {
+      setLoggingOut(false);
+      setCaps(null);
+      setWorkflows(null);
+      setRuns(null);
+      setNodeTypes(null);
+      setSession("out");
     }
   };
 
-  const publish = async () => {
-    if (!draft) return;
-    setErr(null);
-    try {
-      await transport.publish(workflowId, draft.etag);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    }
-  };
+  if (session === "checking") {
+    return (
+      <div className="login-wrap">
+        <Loading>连接本机后端…</Loading>
+      </div>
+    );
+  }
 
-  const validate = async () => {
-    if (!draft) return;
-    try {
-      const r = await transport.validate(workflowId, draft.etag);
-      setDiags(r.diagnostics ?? null);
-    } catch (e) {
-      setDiags(
-        e instanceof TransportError ? (e.diagnostics ?? e.message) : String(e),
+  if (session === "out") {
+    if (!auth) {
+      return (
+        <div className="login-wrap">
+          <div className="login-card">
+            <div className="lc-head">
+              <span className="wordmark">INOFY</span>
+              <span className="plate-div" />
+              <span className="plate-sub">Studio</span>
+            </div>
+            <div className="lc-body" role="alert">
+              会话不可用：{backendErr ?? "宿主未提供登录方式"}。
+            </div>
+          </div>
+        </div>
       );
     }
-  };
+    return <Login auth={auth} backendErr={backendErr} onDone={() => void bootstrap()} />;
+  }
 
-  const run = async () => {
-    if (!draft) return;
-    try {
-      const rv = await transport.startRun({
-        workflow: workflowId,
-        draft_etag: draft.etag,
-        input: {},
-      });
-      setRunId(rv.run_id);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+  const page = (() => {
+    switch (route.name) {
+      case "editor":
+        return (
+          <EditorPage
+            transport={transport}
+            workflowId={route.id}
+            catalog={nodeTypes}
+            publishedRevision={workflows?.find((w) => w.workflow_id === route.id)?.revision}
+            onWorkflowsChanged={() => void refreshWorkflows(true)}
+          />
+        );
+      case "runs":
+        return (
+          <RunsPage
+            transport={transport}
+            runId={route.id}
+            runs={runs}
+            listErr={runsErr}
+            onRefreshRuns={refreshRuns}
+          />
+        );
+      case "settings":
+        return (
+          <SettingsPage
+            conn={conn}
+            nodeTypes={nodeTypes}
+            features={features}
+            caps={caps}
+            onLogout={() => void logout()}
+            busy={loggingOut}
+          />
+        );
+      default:
+        return (
+          <WorkflowsPage
+            transport={transport}
+            workflows={workflows}
+            nodeTypes={nodeTypes}
+            conn={conn}
+            features={features}
+            error={workflowsErr}
+            onRefresh={() => {
+              void refreshWorkflows();
+              void refreshCatalog();
+            }}
+          />
+        );
     }
-  };
-
-  if (!draft || !artifact) return <p>loading…</p>;
+  })();
 
   return (
-    <div className="studio-app">
-      <header className="bar">
-        <strong>{workflowId}</strong>
-        {dirty && <span className="dirty">{t("editor.dirty")}</span>}
-        <button onClick={() => void save()}>{t("action.save")}</button>
-        <button onClick={() => void validate()}>validate</button>
-        <button onClick={() => void publish()} disabled={dirty}>
-          {t("action.publish")}
-        </button>
-        <button onClick={() => void run()} disabled={dirty}>
-          {t("action.run")}
-        </button>
-        <button
-          aria-label="locale"
-          onClick={() => {
-            const next: Locale = getLocale() === "en" ? "zh" : "en";
-            setLocale(next);
-            // rerender via state poke
-            setDiags((d: unknown) => (d === null ? undefined : d));
-          }}
-        >
-          {getLocale() === "en" ? "中文" : "EN"}
-        </button>
-        {conflict && (
-          <span role="alert" className="conflict">
-            conflict: {conflict}
-          </span>
-        )}
-        {err && <span role="alert">{err}</span>}
-      </header>
-      {diags != null && (
-        <pre data-testid="diagnostics">{JSON.stringify(diags, null, 2)}</pre>
-      )}
-      <div className="main">
-        <Editor
-          key={canvasKey}
-          artifact={artifact}
-          catalog={catalog}
-          onArtifactChange={edit}
-        />
-        {runId && <RunView transport={transport} runId={runId} />}
-      </div>
-    </div>
+    <Shell
+      route={route}
+      conn={conn}
+      workflowCount={workflows?.length ?? null}
+      runCount={runs?.length ?? null}
+    >
+      {page}
+    </Shell>
   );
 }

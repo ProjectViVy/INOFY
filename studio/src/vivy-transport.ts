@@ -16,9 +16,12 @@ import type {
   ApiError,
   DraftView,
   NodeDescriptor,
+  PublishView,
   RevisionView,
+  RunDetail,
   RunEvent,
-  RunView,
+  RunSummary,
+  WorkflowSummary,
 } from "./schema";
 
 export interface HostBridge {
@@ -55,7 +58,7 @@ export class VivyTransport implements StudioTransport {
   }
   listWorkflows(cursor?: string) {
     return this.call<{
-      items: { workflow: string; revision?: number }[];
+      items: WorkflowSummary[];
       next_cursor: string | null;
     }>("listWorkflows", { cursor });
   }
@@ -66,34 +69,37 @@ export class VivyTransport implements StudioTransport {
     return this.call<DraftView>("saveDraft", { workflow: id, artifact, etag });
   }
   validate(id: string, etag: string) {
-    return this.call<{ diagnostics?: ApiError["diagnostics"] }>("validate", {
+    return this.call<{ valid?: boolean; diagnostics?: ApiError["diagnostics"] }>("validate", {
       workflow: id,
       etag,
     });
   }
   publish(id: string, etag: string) {
-    return this.call<RevisionView>("publish", { workflow: id, etag });
+    return this.call<PublishView>("publish", { workflow: id, etag });
   }
   getRevision(id: string, revision: number) {
     return this.call<RevisionView>("getRevision", { workflow: id, revision });
   }
   startRun(request: { workflow: string; revision?: number; draft_etag?: string; input?: unknown }) {
-    return this.call<RunView>("startRun", request);
+    return this.call<{ run_id: string }>("startRun", request);
   }
   listRuns(cursor?: string) {
-    return this.call<{ items: RunView[]; next_cursor: string | null }>(
+    return this.call<{ items: RunSummary[]; next_cursor: string | null }>(
       "listRuns",
       { cursor },
     );
   }
   getRun(id: string) {
-    return this.call<RunView>("getRun", { run_id: id });
+    return this.call<RunDetail>("getRun", { run_id: id });
+  }
+  nodeOutput(id: string, node: string) {
+    return this.call<{ output?: unknown }>("nodeOutput", { run_id: id, node });
   }
   cancelRun(id: string) {
-    return this.call<RunView>("cancelRun", { run_id: id });
+    return this.call<{ ok: boolean }>("cancelRun", { run_id: id });
   }
   resumeRun(id: string, answers: Record<string, unknown>) {
-    return this.call<RunView>("resumeRun", { run_id: id, answers });
+    return this.call<{ run_id: string; status: string }>("resumeRun", { run_id: id, answers });
   }
   events(id: string, afterSeq?: number) {
     return this.call<EventPage>("events", { run_id: id, after: afterSeq });

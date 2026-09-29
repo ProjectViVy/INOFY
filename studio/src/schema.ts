@@ -141,22 +141,48 @@ export interface DraftView {
   artifact: Artifact;
 }
 
-export interface RevisionView {
-  workflow: string;
-  revision: number;
-  etag: string;
-  artifact: Artifact;
+export interface WorkflowSummary {
+  workflow_id: string;
+  revision?: number;
 }
 
-export interface RunView {
-  run_id: string;
+// publish 只回执指针与摘要，不回 artifact：取定义要再走 getRevision。
+export interface PublishView {
   workflow: string;
   revision: number;
+  definition_digest?: string;
+}
+
+export interface RevisionView extends PublishView {
+  artifact: Artifact;
+  used_catalog_digest?: string;
+}
+
+// WaitRequest is a durable suspension point (types.go §8.4).
+export interface WaitRequest {
+  request_id: string;
+  kind?: string;
+  prompt?: string;
+  answer_schema?: JsonValue;
+  continuation_ref?: string;
+}
+
+// RunSummary is one durable run row (storage/inspect.go RunRow).
+// Run detail (getRun) carries status/epoch/generation/waits only.
+export interface RunSummary {
+  run_id: string;
   status: string;
-  writer_epoch?: number;
+  workflow_id?: string;
+  revision?: number;
+  epoch?: number;
   generation?: number;
+  writer_epoch?: number;
   created_at?: string;
   updated_at?: string;
+}
+
+export interface RunDetail extends RunSummary {
+  waits?: WaitRequest[];
 }
 
 export interface RunEvent {
@@ -165,4 +191,27 @@ export interface RunEvent {
   path?: string;
   attempt?: number;
   data?: JsonValue;
+}
+
+// run_admitted carries the effective limits snapshot for the run
+// (Go Limits, types.go §8.2 — omitempty: absent means unset).
+export interface RunLimits {
+  max_nodes?: number;
+  max_edges?: number;
+  parallelism?: number;
+  max_repeat_nesting?: number;
+  max_iterations?: number;
+  max_activations?: number;
+  max_attempts_per_call?: number;
+  node_timeout_ms?: number;
+  run_timeout_ms?: number;
+  max_definition_bytes?: number;
+  max_node_input_bytes?: number;
+  max_node_output_bytes?: number;
+  max_output_bytes_total?: number;
+  max_checkpoint_bytes?: number;
+  max_predicate_depth?: number;
+  max_concurrent_runs?: number;
+  max_pending_admissions?: number;
+  [extra: string]: unknown;
 }

@@ -1,23 +1,19 @@
+// 生产入口：基址为空串，全部走同源 /api（开发期由 Vite 代理到
+// 本机 8377，部署时由后端一并托管静态资源）。AppTransport 同时
+// 充当会话门：登录一次换 HttpOnly Cookie，令牌不落任何存储。
+
 import { createRoot } from "react-dom/client";
-import { Editor } from "./Editor";
-import type { Artifact } from "./schema";
+import { App } from "./App";
+import { AppTransport } from "./app-transport";
 import "./styles.css";
 
-// Dev harness: production embedding (S13) mounts App.tsx with a real
-// StudioTransport instead.
-const demo: Artifact = {
-  definition: {
-    schema_version: "inofy.workflow/v1",
-    graph: {
-      nodes: [{ id: "start", kind: "call", type: "inofy.value@1" }],
-      edges: [],
-      exits: ["start"],
-    },
-  },
-};
+const transport = new AppTransport("");
 
-createRoot(document.getElementById("root")!).render(
+const el = document.getElementById("root");
+if (!el) throw new Error("#root missing");
+
+createRoot(el).render(
   <div style={{ width: "100vw", height: "100vh" }}>
-    <Editor artifact={demo} />
+    <App transport={transport} auth={transport} />
   </div>,
 );

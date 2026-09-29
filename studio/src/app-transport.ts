@@ -13,13 +13,22 @@ import type {
   ApiError,
   DraftView,
   NodeDescriptor,
+  PublishView,
   RevisionView,
+  RunDetail,
   RunEvent,
-  RunView,
+  RunSummary,
+  WorkflowSummary,
 } from "./schema";
 
 export class AppTransport implements StudioTransport {
-  constructor(private base: string, private fetchImpl = fetch) {}
+  // fetch 必须以 Window 为接收者调用：存成实例属性再经 this 调用
+  // 会抛「Illegal invocation」，所以在构造时先绑定。
+  private readonly call: typeof fetch;
+
+  constructor(private base: string, fetchImpl: typeof fetch = fetch) {
+    this.call = fetchImpl.bind(globalThis);
+  }
 
   private async req<T>(
     method: string,
@@ -31,7 +40,7 @@ export class AppTransport implements StudioTransport {
       raw?: boolean;
     } = {},
   ): Promise<T> {
-    const res = await this.fetchImpl(this.base + path, {
+    const res = await this.call(this.base + path, {
       method,
       credentials: "include",
       headers: {
@@ -76,44 +85,43 @@ export class AppTransport implements StudioTransport {
   }
 
   async listWorkflows(cursor?: string) {
-    const r = await this.req<{
-      items: { workflow: string; revision?: number }[];
-      next_cursor?: string;
-    }>("GET", `/api/v1/workflows${cursor ? `?cursor=${cursor}` : ""}`);
-    return { items: r.items, next_cursor: r.next_cursor ?? null };
+    const r = await this.req<{ items: WorkflowSummary[] | null; next_cursor?: string }>(
+      "GET",
+      `/api/v1/workflows${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
+    );
+    return { items: r.items ?? [], next_cursor: r.next_cursor ?? null };
   }
   async loadDraft(id: string) {
-    return this.req<DraftView>("GET", `/api/v1/workflows/${id}/draft`);
+    return this.req<DraftView>("GET", `/api/v1/workflows/${encodeURIComponent(id)}/draft`);
   }
   async saveDraft(id: string, artifact: Artifact, etag: string | null) {
     const headers: Record<string, string> =
       etag == null ? { "if-none-match": "*" } : { "if-match": etag };
     const r = await this.req<{ etag: string }>(
       "PUT",
-      `/api/v1/workflows/${id}/draft`,
+      `/api/v1/workflows/${encodeURIComponent(id)}/draft`,
       { body: artifact, headers },
     );
     return { workflow: id, etag: r.etag, artifact };
   }
   async validate(id: string, etag: string) {
-    return this.req<{ diagnostics?: ApiError["diagnostics"] }>(
+    return this.req<{ valid?: boolean; diagnostics?: ApiError["diagnostics"] }>(
       "POST",
-      `/api/v1/workflows/${id}/validate`,
+      `/api/v1/workflows/${encodeURIComponent(id)}/validate`,
       { headers: { "if-match": etag } },
     );
   }
   async publish(id: string, etag: string) {
-    const r = await this.req<{ workflow: string; revision: number }>(
+    return this.req<PublishView>(
       "POST",
-      `/api/v1/workflows/${id}/publish`,
+      `/api/v1/workflows/${encodeURIComponent(id)}/publish`,
       { headers: { "if-match": etag } },
     );
-    return this.getRevision(r.workflow, r.revision);
   }
   async getRevision(id: string, revision: number) {
     return this.req<RevisionView>(
       "GET",
-      `/api/v1/workflows/${id}/revisions/${revision}`,
+      `/api/v1/workflows/${encodeURIComponent(id)}/revisions/${revision}`,
     );
   }
 
@@ -123,37 +131,45 @@ export class AppTransport implements StudioTransport {
     draft_etag?: string;
     input?: unknown;
   }) {
-    const r = await this.req<{ run_id: string }>("POST", "/api/v1/runs", {
+    return this.req<{ run_id: string }>("POST", "/api/v1/runs", {
       body: request,
       headers: { "idempotency-key": crypto.randomUUID() },
     });
-    return this.getRun(r.run_id);
   }
   async listRuns(cursor?: string) {
-    const r = await this.req<{ items: RunView[]; next_cursor?: string }>(
+    const r = await this.req<{ items: RunSummary[] | null; next_cursor?: string }>(
       "GET",
-      `/api/v1/runs${cursor ? `?cursor=${cursor}` : ""}`,
+      `/api/v1/runs${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
     );
-    return { items: r.items, next_cursor: r.next_cursor ?? null };
+    return { items: r.items ?? [], next_cursor: r.next_cursor ?? null };
   }
   getRun(id: string) {
-    return this.req<RunView>("GET", `/api/v1/runs/${id}`);
+    return this.req<RunDetail>("GET", `/api/v1/runs/${encodeURIComponent(id)}`);
+  }
+  async nodeOutput(id: string, node: string) {
+    return this.req<{ output?: unknown }>(
+      "GET",
+      `/api/v1/runs/${encodeURIComponent(id)}/nodes/${encodeURIComponent(node)}/output`,
+    );
   }
   cancelRun(id: string) {
-    return this.req<RunView>("POST", `/api/v1/runs/${id}/cancel`, {
-      headers: { "idempotency-key": crypto.randomUUID() },
-    });
+    return this.req<{ ok: boolean }>(
+      "POST",
+      `/api/v1/runs/${encodeURIComponent(id)}/cancel`,
+      { headers: { "idempotency-key": crypto.randomUUID() } },
+    );
   }
   async resumeRun(id: string, answers: Record<string, unknown>) {
-    return this.req<RunView>("POST", `/api/v1/runs/${id}/resume`, {
-      body: { answers },
-      headers: { "idempotency-key": crypto.randomUUID() },
-    });
+    return this.req<{ run_id: string; status: string }>(
+      "POST",
+      `/api/v1/runs/${encodeURIComponent(id)}/resume`,
+      { body: { answers }, headers: { "idempotency-key": crypto.randomUUID() } },
+    );
   }
   async events(id: string, afterSeq?: number) {
-    const r = await this.req<{ events: RunEvent[] }>(
+    const r = await this.req<{ events: RunEvent[] | null }>(
       "GET",
-      `/api/v1/runs/${id}/events${afterSeq != null ? `?after=${afterSeq}` : ""}`,
+      `/api/v1/runs/${encodeURIComponent(id)}/events${afterSeq != null ? `?after=${afterSeq}` : ""}`,
     );
     const events = r.events ?? [];
     return {
@@ -174,8 +190,8 @@ export class AppTransport implements StudioTransport {
     const ac = new AbortController();
     const go = async () => {
       try {
-        const res = await this.fetchImpl(
-          `${this.base}/api/v1/runs/${id}/events${afterSeq != null ? `?after=${afterSeq}` : ""}`,
+        const res = await this.call(
+          `${this.base}/api/v1/runs/${encodeURIComponent(id)}/events${afterSeq != null ? `?after=${afterSeq}` : ""}`,
           {
             credentials: "include",
             headers: { accept: "text/event-stream" },

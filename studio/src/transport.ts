@@ -9,9 +9,12 @@ import type {
   ApiError,
   DraftView,
   NodeDescriptor,
+  PublishView,
   RevisionView,
+  RunDetail,
   RunEvent,
-  RunView,
+  RunSummary,
+  WorkflowSummary,
 } from "./schema";
 
 export class TransportError extends Error {
@@ -42,18 +45,19 @@ export interface StudioTransport {
   capabilities(): Promise<Record<string, unknown>>;
   nodeTypes(): Promise<NodeDescriptor[]>;
 
-  listWorkflows(cursor?: string): Promise<{ items: { workflow: string; revision?: number }[]; next_cursor: string | null }>;
+  listWorkflows(cursor?: string): Promise<{ items: WorkflowSummary[]; next_cursor: string | null }>;
   loadDraft(id: string): Promise<DraftView>;
   saveDraft(id: string, artifact: Artifact, etag: string | null): Promise<DraftView>;
-  validate(id: string, etag: string): Promise<{ diagnostics?: ApiError["diagnostics"] }>;
-  publish(id: string, etag: string): Promise<RevisionView>;
+  validate(id: string, etag: string): Promise<{ valid?: boolean; diagnostics?: ApiError["diagnostics"] }>;
+  publish(id: string, etag: string): Promise<PublishView>;
   getRevision(id: string, revision: number): Promise<RevisionView>;
 
-  startRun(request: { workflow: string; revision?: number; draft_etag?: string; input?: unknown }): Promise<RunView>;
-  listRuns(cursor?: string): Promise<{ items: RunView[]; next_cursor: string | null }>;
-  getRun(id: string): Promise<RunView>;
-  cancelRun(id: string): Promise<RunView>;
-  resumeRun(id: string, answers: Record<string, unknown>): Promise<RunView>;
+  startRun(request: { workflow: string; revision?: number; draft_etag?: string; input?: unknown }): Promise<{ run_id: string }>;
+  listRuns(cursor?: string): Promise<{ items: RunSummary[]; next_cursor: string | null }>;
+  getRun(id: string): Promise<RunDetail>;
+  nodeOutput(id: string, node: string): Promise<{ output?: unknown }>;
+  cancelRun(id: string): Promise<{ ok: boolean }>;
+  resumeRun(id: string, answers: Record<string, unknown>): Promise<{ run_id: string; status: string }>;
   events(id: string, afterSeq?: number): Promise<EventPage>;
   subscribeEvents(
     id: string,

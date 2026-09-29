@@ -13,6 +13,8 @@ export interface CanvasNodeData extends Record<string, unknown> {
   node: Node;
   unresolved: boolean;
   isExit: boolean;
+  // 无上游输入的节点：图的入口。
+  isEntry?: boolean;
   // True when the node had an authored position; otherwise the
   // position is a grid fallback and only persists if the user moves it.
   positionAuthored: boolean;
@@ -31,6 +33,7 @@ export function toCanvas(artifact: Artifact, catalog?: string[]): Canvas {
   const g = artifact.definition.graph;
   const positions = artifact.presentation?.layout?.positions ?? {};
   const exits = new Set(g.exits);
+  const hasUpstream = new Set(g.edges.map((e) => e.to));
   const nodes: RFNode<CanvasNodeData>[] = g.nodes.map((n, i) => {
     const authored = positions[n.id];
     const fallbackPos = { x: (i % 4) * GRID, y: Math.floor(i / 4) * GRID };
@@ -43,6 +46,7 @@ export function toCanvas(artifact: Artifact, catalog?: string[]): Canvas {
         unresolved:
           n.kind === "call" && catalog != null && !catalog.includes(n.type ?? ""),
         isExit: exits.has(n.id),
+        isEntry: !hasUpstream.has(n.id),
         positionAuthored: authored != null,
         fallbackPos,
       },
