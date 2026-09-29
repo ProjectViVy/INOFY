@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -66,7 +67,15 @@ func (h *handler) serveSSE(w http.ResponseWriter, r *http.Request, runID string,
 			return
 		}
 		for _, e := range events {
-			fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", e.Seq, e.Kind, e.Data)
+			// data carries the whole committed record (seq/kind/path/
+			// attempt/data) — the same shape the paged endpoint and the
+			// studio's RunEvent expect; a payload-only blob would drop
+			// the cursor and kind a subscriber needs.
+			b, err := json.Marshal(e)
+			if err != nil {
+				return
+			}
+			fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", e.Seq, e.Kind, b)
 			after = e.Seq
 		}
 		flusher.Flush()

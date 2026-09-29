@@ -37,7 +37,17 @@ type handler struct {
 func NewHandler(d Dependencies) http.Handler {
 	h := &handler{d: d, mux: http.NewServeMux()}
 	h.routes()
-	return d.Auth.RequireAuth(h.mux)
+	authed := d.Auth.RequireAuth(h.mux)
+	// POST /session is the bootstrap: the owner token in the body is
+	// the credential (constant-time checked by postSession), so it
+	// cannot itself demand a session or bearer first.
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/session" {
+			h.mux.ServeHTTP(w, r)
+			return
+		}
+		authed.ServeHTTP(w, r)
+	})
 }
 
 func (h *handler) routes() {

@@ -1,0 +1,2 @@
+# 运行时状态目录（-state 默认值）：owner.token 与本地 app.db 都不得入库。
+.inofy/

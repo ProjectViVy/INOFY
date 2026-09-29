@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -31,6 +32,11 @@ import (
 	"github.com/ProjectViVy/inofy/apps/inofy/internal/storage"
 	"github.com/ProjectViVy/inofy/definitions"
 )
+
+// Windows exposes no POSIX permission bits (Go reports 0666 for files
+// and 0777 for directories there); access is governed by ACLs instead,
+// so the user-only mode checks below cannot be satisfied nor enforced.
+const permsEnforced = runtime.GOOS != "windows"
 
 func main() {
 	stateDir := flag.String("state", ".inofy", "state directory (owner-only)")
@@ -50,7 +56,7 @@ func run(stateDir, listen, connFile string) error {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return err
 	}
-	if st, err := os.Stat(stateDir); err == nil && st.Mode().Perm()&0o077 != 0 {
+	if st, err := os.Stat(stateDir); err == nil && permsEnforced && st.Mode().Perm()&0o077 != 0 {
 		return fmt.Errorf("state directory %s must be user-only (0700)", stateDir)
 	}
 	tokFile := filepath.Join(stateDir, "owner.token")

@@ -12,10 +12,16 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 )
+
+// Windows exposes no POSIX permission bits (Go reports 0666 for files
+// there); access is governed by ACLs instead, so the 0600 check below
+// can neither be satisfied nor enforced on that platform.
+const permsEnforced = runtime.GOOS != "windows"
 
 // Options bound the session surface.
 type Options struct {
@@ -39,7 +45,7 @@ func New(tokenFile string, opts Options) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	if st, err := os.Stat(tokenFile); err == nil && st.Mode().Perm()&0o077 != 0 {
+	if st, err := os.Stat(tokenFile); err == nil && permsEnforced && st.Mode().Perm()&0o077 != 0 {
 		return nil, errors.New("token file must be user-only (0600)")
 	}
 	token := strings.TrimSpace(string(b))
