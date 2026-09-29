@@ -1,0 +1,29 @@
+{
+  "description": "G2 truth table for the pinned Eino workflow probe graph. Topology: START fans out to a, b and c; join ANDs a+b; sw switches on input.port; port p1 owns region {p1a, p1b}, port p2 owns {p2a}; sel converges p1b|p2a; mix illegally ANDs p1b with unconditional c to document the skipped-dependency hazard; exits are sel and a. Observed on v0.9.13: a node with no path to END races run settlement — mix and c sometimes execute, sometimes are cut off; only END-ancestral nodes are awaited. Deterministic assertions therefore cover execution/skip only for END-reachable nodes, plus 'skipped predecessors never supply data' whenever mix does run.",
+  "cases": [
+    {
+      "name": "port p1",
+      "input": {"port": "p1", "payload": "x"},
+      "expect_executed": ["a", "b", "join", "sw", "p1a", "p1b", "sel"],
+      "expect_not_executed": ["p2a"],
+      "expect_sel_source": "p1",
+      "expect_mix_has_from_p1": true
+    },
+    {
+      "name": "port p2",
+      "input": {"port": "p2", "payload": "x"},
+      "expect_executed": ["a", "b", "join", "sw", "p2a", "sel"],
+      "expect_not_executed": ["p1a", "p1b"],
+      "expect_sel_source": "p2",
+      "expect_mix_has_from_p1": false
+    },
+    {
+      "name": "unmatched port falls to default p2",
+      "input": {"port": "zzz", "payload": "x"},
+      "expect_executed": ["a", "b", "join", "sw", "p2a", "sel"],
+      "expect_not_executed": ["p1a", "p1b"],
+      "expect_sel_source": "p2",
+      "expect_mix_has_from_p1": false
+    }
+  ]
+}

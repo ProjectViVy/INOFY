@@ -1,0 +1,26 @@
+# https://docs.devin.ai/onboard-devin/environment-yaml
+# Commands run from the repo root.
+# One-time setup: install the Go SDK (repo declares `go 1.26`; hosts pin 1.26.4, toolchain 1.27.1 verified).
+initialize: |
+  mkdir -p "$HOME/sdk/go1.27.1"
+  curl -fsSL https://go.dev/dl/go1.27.1.linux-amd64.tar.gz | tar -C "$HOME/sdk/go1.27.1" --strip-components=1 -xz
+  echo "PATH=$HOME/sdk/go1.27.1/bin:$PATH" >> "$ENVRC"
+  # studio/ (S10) is a pnpm TypeScript package: put nvm node on PATH and
+  # activate pnpm via corepack (node itself is baked into the image).
+  export PATH="$HOME/.nvm/versions/node/v24.19.0/bin:$PATH"
+  echo "PATH=$HOME/.nvm/versions/node/v24.19.0/bin:$PATH" >> "$ENVRC"
+  corepack enable && corepack prepare pnpm@9.15.0 --activate
+# Install project dependencies (module cache).
+maintenance: |
+  "$HOME/sdk/go1.27.1/bin/go" mod download
+# Reference info for agent
+knowledge:
+  - name: test
+    contents: |
+      go test ./...
+  - name: lint
+    contents: |
+      go vet ./... && gofmt -l .
+  - name: notes
+    contents: |
+      Root module must stay free of SQL/HTTP/App imports; `go list -deps ./...` must show none. Probes pin cloudwego/eino v0.9.13 under internal/einoruntime. `studio/` is a separate pnpm package — `cd studio && pnpm install && pnpm test && pnpm build`.

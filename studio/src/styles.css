@@ -1,0 +1,61 @@
+.inofy-node {
+  padding: 8px 12px;
+  border: 1px solid #8a93a6;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 120px;
+}
+.inofy-node.selected {
+  outline: 2px solid #3b82f6;
+}
+.inofy-node .kind {
+  color: #6b7280;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+}
+.inofy-node .type {
+  color: #374151;
+}
+.inofy-node.unresolved {
+  border-color: #d97706;
+}
+.badge {
+  align-self: flex-start;
+  border-radius: 4px;
+  padding: 0 4px;
+  font-size: 10px;
+}
+.badge.warn {
+  background: #fef3c7;
+  color: #92400e;
+}
+.badge.exit {
+  background: #dcfce7;
+  color: #166534;
+}
+.node-props {
+  width: 280px;
+  border-left: 1px solid #e5e7eb;
+  padding: 12px;
+  overflow: auto;
+  font-size: 12px;
+}
+.node-props label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.node-props textarea {
+  min-height: 96px;
+  font-family: monospace;
+}
+.node-props pre {
+  font-size: 11px;
+  overflow: auto;
+}

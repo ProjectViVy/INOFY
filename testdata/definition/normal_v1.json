@@ -1,0 +1,241 @@
+{
+  "algorithm": "inofy-normal-v1",
+  "digest_format": "inofy-normal-v1:sha256:<64 hex chars>",
+  "rules": {
+    "object_keys": "sorted by UTF-8 byte order (Go encoding/json order)",
+    "nodes": "array under any graph sorted by id",
+    "edges": "array under any graph sorted by (from, port, to)",
+    "exits": "sorted (a set, not an ordered list)",
+    "candidates": "sorted by (source, pointer)",
+    "cases_and_args": "authored order preserved",
+    "numbers": "finite binary64; integral values beyond +/-2^53-1 rejected; -0 becomes 0; integral values emit integer form",
+    "strings": "Unicode code points preserved; no HTML escaping; no Unicode normalization",
+    "encoding": "encoding/json compatible, SetEscapeHTML(false), no indentation, no trailing newline"
+  },
+  "cases": [
+    {
+      "name": "object_key_order",
+      "doc": {
+        "b": 1,
+        "a": {
+          "d": 2,
+          "c": 3
+        }
+      },
+      "normalized": "{\"a\":{\"c\":3,\"d\":2},\"b\":1}",
+      "digest": "inofy-normal-v1:sha256:78d48859c3252943aab7306f76c80f3f07783582e05ab8f944ce0696f2dbfc67"
+    },
+    {
+      "name": "node_id_sort",
+      "doc": {
+        "graph": {
+          "nodes": [
+            {
+              "id": "b"
+            },
+            {
+              "id": "a"
+            }
+          ]
+        }
+      },
+      "normalized": "{\"graph\":{\"nodes\":[{\"id\":\"a\"},{\"id\":\"b\"}]}}",
+      "digest": "inofy-normal-v1:sha256:0a21c20e153b425c532f4dd41a4f201d44fee3fa91f475a7afc696cf9920ce4a"
+    },
+    {
+      "name": "edge_triple_sort",
+      "doc": {
+        "graph": {
+          "edges": [
+            {
+              "from": "b",
+              "to": "a"
+            },
+            {
+              "from": "a",
+              "to": "b"
+            },
+            {
+              "from": "a",
+              "port": "p",
+              "to": "a"
+            },
+            {
+              "from": "a",
+              "to": "a"
+            }
+          ]
+        }
+      },
+      "normalized": "{\"graph\":{\"edges\":[{\"from\":\"a\",\"to\":\"a\"},{\"from\":\"a\",\"to\":\"b\"},{\"from\":\"a\",\"port\":\"p\",\"to\":\"a\"},{\"from\":\"b\",\"to\":\"a\"}]}}",
+      "digest": "inofy-normal-v1:sha256:73fbcdbee662f2bd24f67c176f0eddf0bdda8600a1174ad48f0b1b86b099ae74"
+    },
+    {
+      "name": "exits_sort",
+      "doc": {
+        "graph": {
+          "exits": [
+            "z",
+            "a"
+          ]
+        }
+      },
+      "normalized": "{\"graph\":{\"exits\":[\"a\",\"z\"]}}",
+      "digest": "inofy-normal-v1:sha256:955eee73bf9b8eb2e0ad2014bde6bef9f3aa13de42b1b4d8a2887a103e2c941a"
+    },
+    {
+      "name": "candidates_sort",
+      "doc": {
+        "graph": {
+          "nodes": [
+            {
+              "id": "s",
+              "candidates": [
+                {
+                  "source": "b",
+                  "pointer": "/o"
+                },
+                {
+                  "source": "a",
+                  "pointer": "/o"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "normalized": "{\"graph\":{\"nodes\":[{\"candidates\":[{\"pointer\":\"/o\",\"source\":\"a\"},{\"pointer\":\"/o\",\"source\":\"b\"}],\"id\":\"s\"}]}}",
+      "digest": "inofy-normal-v1:sha256:fa7d8e9581e80b05495a38c6a277defec60116075c3e90f0ebb5051d4699d8ee"
+    },
+    {
+      "name": "negative_zero",
+      "doc": {
+        "x": 0
+      },
+      "normalized": "{\"x\":0}",
+      "digest": "inofy-normal-v1:sha256:5bff452c5ed93f2e87a23984db5a15050c6477335fdec955b70063bb2d692bf1"
+    },
+    {
+      "name": "html_escape_off",
+      "doc": {
+        "s": "<a>&\u2028"
+      },
+      "normalized": "{\"s\":\"<a>&\\u2028\"}",
+      "digest": "inofy-normal-v1:sha256:e41a71da17c65643f126e6103a40d0efdd893736e5391b1775b9aadf9160143d"
+    },
+    {
+      "name": "unicode_preserved",
+      "doc": {
+        "s": "héllo·世界"
+      },
+      "normalized": "{\"s\":\"héllo·世界\"}",
+      "digest": "inofy-normal-v1:sha256:3f3d682bf9280899f402c8851817a753ac3399a4a309696a111d29e5e74b1df8"
+    },
+    {
+      "name": "safe_int_boundary",
+      "doc": {
+        "max": 9007199254740991,
+        "min": -9007199254740991
+      },
+      "normalized": "{\"max\":9007199254740991,\"min\":-9007199254740991}",
+      "digest": "inofy-normal-v1:sha256:63546eb60913dcb1cdd5118f7bf4885beed344af930c8a9d5f38fad243fd4819"
+    },
+    {
+      "name": "unsafe_integer_reject",
+      "doc": {
+        "v": 9007199254740992
+      },
+      "reject": "unsafe_integer"
+    },
+    {
+      "name": "unsafe_exponent_reject",
+      "doc": {
+        "v": 1e+20
+      },
+      "reject": "unsafe_integer"
+    },
+    {
+      "name": "non_finite_reject",
+      "doc": {
+        "v": 1e400
+      },
+      "reject": "non_finite"
+    },
+    {
+      "name": "float_integral_form",
+      "doc": {
+        "x": 3.0
+      },
+      "normalized": "{\"x\":3}",
+      "digest": "inofy-normal-v1:sha256:54afd0d590e6b277d9cd1ce46e5480f683682e43b6b480f7d24906d9e935e44c"
+    },
+    {
+      "name": "float_short_forms",
+      "doc": {
+        "x": 0.5,
+        "y": 3.14,
+        "z": 0.001
+      },
+      "normalized": "{\"x\":0.5,\"y\":3.14,\"z\":0.001}",
+      "digest": "inofy-normal-v1:sha256:3c03b355287db2b61639d5a4b7be60ea23acc60bf566df64aa4e172a563fc7ee"
+    },
+    {
+      "name": "null_distinct",
+      "doc": {
+        "a": null
+      },
+      "normalized": "{\"a\":null}",
+      "digest": "inofy-normal-v1:sha256:d091f9c83c091f79652fe8786375b3fe4ce0861a56f5bfbafedbe431877ff0e8"
+    },
+    {
+      "name": "empty_containers",
+      "doc": {
+        "a": [],
+        "o": {}
+      },
+      "normalized": "{\"a\":[],\"o\":{}}",
+      "digest": "inofy-normal-v1:sha256:9bee7ebfc94b459dacb8cbc72cb2900e61f0aa42189df18329f84f92568f4f89"
+    },
+    {
+      "name": "nested_graph_sort",
+      "doc": {
+        "graph": {
+          "nodes": [
+            {
+              "id": "r",
+              "kind": "repeat",
+              "body": {
+                "nodes": [
+                  {
+                    "id": "b2"
+                  },
+                  {
+                    "id": "b1"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "normalized": "{\"graph\":{\"nodes\":[{\"body\":{\"nodes\":[{\"id\":\"b1\"},{\"id\":\"b2\"}]},\"id\":\"r\",\"kind\":\"repeat\"}]}}",
+      "digest": "inofy-normal-v1:sha256:c5b183a9c6a94a1a351644602170e255d09ad82e5b6c8d86b24b481607ea7c75"
+    },
+    {
+      "name": "exponent_normalize",
+      "doc": {
+        "v": 100.0
+      },
+      "normalized": "{\"v\":100}",
+      "digest": "inofy-normal-v1:sha256:f5e217574b9ef3a1bbe39c848e3fe566a28b3ddfd4017eb8b2ccd5fae2379a61"
+    },
+    {
+      "name": "negative_float",
+      "doc": {
+        "v": -2.5
+      },
+      "normalized": "{\"v\":-2.5}",
+      "digest": "inofy-normal-v1:sha256:c2a4ff18a3e36f4fb64980bd8e3a89ff0ec1a7963e8189d87acf111d6991dd33"
+    }
+  ]
+}
