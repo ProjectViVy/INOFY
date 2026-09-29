@@ -214,6 +214,7 @@ export function App({ transport, auth }: Props) {
             nodeTypes={nodeTypes}
             features={features}
             caps={caps}
+            transport={transport}
             onLogout={() => void logout()}
             busy={loggingOut}
           />

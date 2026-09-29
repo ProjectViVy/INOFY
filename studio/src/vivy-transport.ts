@@ -104,6 +104,15 @@ export class VivyTransport implements StudioTransport {
   events(id: string, afterSeq?: number) {
     return this.call<EventPage>("events", { run_id: id, after: afterSeq });
   }
+  listConnections() {
+    return this.call<import("./schema").ConnectionView[]>("listConnections");
+  }
+  putConnection(id: string, body: { kind: string; base_url: string; model: string; api_key?: string }) {
+    return this.call<{ ok: boolean }>("putConnection", { id, ...body });
+  }
+  deleteConnection(id: string) {
+    return this.call<{ ok: boolean }>("deleteConnection", { id });
+  }
   subscribeEvents(
     id: string,
     afterSeq: number | undefined,

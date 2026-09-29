@@ -28,7 +28,7 @@ type Connection struct {
 // Dependencies wire the App adapter: approved connections, a secret
 // resolver, and the durable ledger consulted before effects.
 type Dependencies struct {
-	Connections map[string]Connection
+	Connections *Registry
 	Secrets     func(env string) (string, bool)
 	Ledger      *storage.Store
 }
@@ -117,4 +117,3 @@ func Catalog(d Dependencies) inofy.Catalog {
 	}
 	return cat
 }
-

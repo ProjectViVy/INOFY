@@ -10,6 +10,7 @@ import {
 } from "./transport";
 import type {
   Artifact,
+  ConnectionView,
   ApiError,
   DraftView,
   NodeDescriptor,
@@ -176,6 +177,30 @@ export class AppTransport implements StudioTransport {
       events,
       next_cursor: events.length ? String(events[events.length - 1]!.seq) : null,
     };
+  }
+
+  async listConnections() {
+    const r = await this.req<{ connections?: ConnectionView[] }>(
+      "GET",
+      "/api/v1/connections",
+    );
+    return r.connections ?? [];
+  }
+  async putConnection(
+    id: string,
+    body: { kind: string; base_url: string; model: string; api_key?: string },
+  ) {
+    return this.req<{ ok: boolean }>(
+      "PUT",
+      `/api/v1/connections/${encodeURIComponent(id)}`,
+      { body },
+    );
+  }
+  async deleteConnection(id: string) {
+    return this.req<{ ok: boolean }>(
+      "DELETE",
+      `/api/v1/connections/${encodeURIComponent(id)}`,
+    );
   }
 
   // SSE subscriber over fetch streaming: replays committed events

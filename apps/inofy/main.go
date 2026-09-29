@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/ProjectViVy/inofy/apps/inofy/internal/auth"
+	"github.com/ProjectViVy/inofy/apps/inofy/internal/conns"
 	"github.com/ProjectViVy/inofy/apps/inofy/internal/dispatch"
 	"github.com/ProjectViVy/inofy/apps/inofy/internal/httpapi"
 	"github.com/ProjectViVy/inofy/apps/inofy/internal/nodes"
@@ -80,11 +81,15 @@ func run(stateDir, listen, connFile string) error {
 	}
 	defer st.Close()
 
-	deps, err := nodeDeps(connFile)
+	connStore, err := connStore(stateDir, connFile)
 	if err != nil {
 		return err
 	}
-	deps.Ledger = st
+	deps := nodes.Dependencies{
+		Connections: connStore.Registry(),
+		Secrets:     connStore.Resolve,
+		Ledger:      st,
+	}
 	exec := nodes.New(deps)
 	cat := nodes.Catalog(deps)
 
@@ -95,13 +100,14 @@ func run(stateDir, listen, connFile string) error {
 	defer d.Stop()
 
 	srv := &http.Server{
-		Addr:              listen,
-		Handler:           httpapi.NewHandler(httpapi.Dependencies{
+		Addr: listen,
+		Handler: httpapi.NewHandler(httpapi.Dependencies{
 			Auth:        a,
 			Store:       st,
 			Definitions: definitions.NewService(st),
 			Dispatch:    d,
 			Catalog:     cat,
+			Conns:       connStore,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
@@ -139,24 +145,22 @@ func loopbackOnly(addr string) error {
 	return fmt.Errorf("refusing non-loopback listen %q without explicit deployment decision", addr)
 }
 
-// nodeDeps loads approved connections from a JSON map (env-name
-// secrets only — the file never holds keys).
-func nodeDeps(connFile string) (nodes.Dependencies, error) {
-	d := nodes.Dependencies{
-		Secrets: func(env string) (string, bool) { return os.LookupEnv(env) },
+// connStore opens the persisted connection store and seeds it with
+// the optional startup JSON map (env-name secrets only — the file
+// never holds keys).
+func connStore(stateDir, connFile string) (*conns.Store, error) {
+	seed := map[string]nodes.Connection{}
+	if connFile != "" {
+		b, err := os.ReadFile(connFile)
+		if err != nil {
+			return nil, err
+		}
+		if strings.Contains(string(b), "sk-") {
+			return nil, fmt.Errorf("connection file %s appears to hold a raw key — env names only", connFile)
+		}
+		if err := json.Unmarshal(b, &seed); err != nil {
+			return nil, fmt.Errorf("parse connections: %w", err)
+		}
 	}
-	if connFile == "" {
-		return d, nil
-	}
-	b, err := os.ReadFile(connFile)
-	if err != nil {
-		return d, err
-	}
-	if strings.Contains(string(b), "sk-") {
-		return d, fmt.Errorf("connection file %s appears to hold a raw key — env names only", connFile)
-	}
-	if err := json.Unmarshal(b, &d.Connections); err != nil {
-		return d, fmt.Errorf("parse connections: %w", err)
-	}
-	return d, nil
+	return conns.Open(stateDir, seed)
 }

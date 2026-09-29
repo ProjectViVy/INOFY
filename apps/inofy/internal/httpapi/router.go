@@ -14,6 +14,7 @@ import (
 
 	inofy "github.com/ProjectViVy/inofy"
 	"github.com/ProjectViVy/inofy/apps/inofy/internal/auth"
+	"github.com/ProjectViVy/inofy/apps/inofy/internal/conns"
 	"github.com/ProjectViVy/inofy/apps/inofy/internal/dispatch"
 	"github.com/ProjectViVy/inofy/apps/inofy/internal/storage"
 	"github.com/ProjectViVy/inofy/definitions"
@@ -26,10 +27,11 @@ type Dependencies struct {
 	Definitions *definitions.Service
 	Dispatch    *dispatch.Service
 	Catalog     inofy.Catalog
+	Conns       *conns.Store
 }
 
 type handler struct {
-	d Dependencies
+	d   Dependencies
 	mux *http.ServeMux
 }
 
@@ -68,6 +70,9 @@ func (h *handler) routes() {
 	h.mux.HandleFunc("GET /api/v1/runs/{id}/nodes/{key}/output", h.getNodeOutput)
 	h.mux.HandleFunc("POST /api/v1/runs/{id}/cancel", h.postCancel)
 	h.mux.HandleFunc("POST /api/v1/runs/{id}/resume", h.postResume)
+	h.mux.HandleFunc("GET /api/v1/connections", h.listConnections)
+	h.mux.HandleFunc("PUT /api/v1/connections/{id}", h.putConnection)
+	h.mux.HandleFunc("DELETE /api/v1/connections/{id}", h.deleteConnection)
 }
 
 // --- session ----------------------------------------------------------
