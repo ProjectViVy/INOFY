@@ -192,7 +192,45 @@ type ErrorPolicy struct {
 type Binding struct {
 	Literal json.RawMessage `json:"literal,omitempty"`
 	Source  string          `json:"source,omitempty"`
-	Pointer string          `json:"pointer,omitempty"`
+	// Pointer keeps presence information: an explicit "" is a valid RFC
+	// 6901 root pointer, distinct from an absent key (which strict decode
+	// rejects), so omitempty must not collapse the two. Marshaling emits
+	// the key when it was present on decode (HasPointer) or the value is
+	// non-empty; only an authored/programmatic root pointer needs the flag.
+	Pointer    string `json:"-"`
+	HasPointer bool   `json:"-"`
+}
+
+func (b Binding) MarshalJSON() ([]byte, error) {
+	type wire struct {
+		Literal json.RawMessage `json:"literal,omitempty"`
+		Source  string          `json:"source,omitempty"`
+		Pointer *string         `json:"pointer,omitempty"`
+	}
+	w := wire{Literal: b.Literal, Source: b.Source}
+	if b.HasPointer || b.Pointer != "" {
+		p := b.Pointer
+		w.Pointer = &p
+	}
+	return json.Marshal(w)
+}
+
+func (b *Binding) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Literal json.RawMessage `json:"literal"`
+		Source  string          `json:"source"`
+		Pointer *string         `json:"pointer"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	b.Literal, b.Source = wire.Literal, wire.Source
+	if wire.Pointer != nil {
+		b.Pointer, b.HasPointer = *wire.Pointer, true
+	} else {
+		b.Pointer, b.HasPointer = "", false
+	}
+	return nil
 }
 
 type PredicateOp string
