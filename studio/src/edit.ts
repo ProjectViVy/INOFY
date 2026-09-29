@@ -75,7 +75,7 @@ export function setExit(a: Artifact, id: string, on: boolean): Artifact {
   const outputs = on && bound
     ? { ...previous }
     : { ...withoutNodeOutput(previous, id) };
-  if (on && !bound) outputs[id] = { source: id };
+  if (on && !bound) outputs[id] = { source: id, pointer: "" };
   return {
     ...a,
     definition: {
@@ -101,7 +101,7 @@ function exitBound(outputs: Graph["outputs"], id: string) {
 export function setExitOutputName(a: Artifact, id: string, name: string): Artifact {
   const outputs = { ...withoutNodeOutput(a.definition.graph.outputs, id) };
   const trimmed = name.trim();
-  if (trimmed !== "") outputs[trimmed] = { source: id };
+  if (trimmed !== "") outputs[trimmed] = { source: id, pointer: "" };
   return {
     ...a,
     definition: {
