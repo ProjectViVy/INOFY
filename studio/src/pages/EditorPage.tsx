@@ -15,7 +15,7 @@ import { Editor, NODE_TYPE_MIME } from "../Editor";
 import { NodeProperties } from "../components/NodeProperties";
 import { Btn, Empty, Loading, Mk, Tag, Tbtn } from "../components/Ui";
 import { navigate, routeHref } from "../router";
-import { addNodeAt, patchNode, removeNode, setExit } from "../edit";
+import { addNodeAt, exitOutputName, patchNode, removeNode, setExit, setExitOutputName } from "../edit";
 import { blankArtifact } from "../seed";
 import { replayLabel, replayOf, typeName } from "../labels";
 import { t } from "../i18n";
@@ -648,8 +648,10 @@ export function EditorPage({
               node={selectedNode}
               descriptor={byType.get(selectedNode.type ?? "")}
               isExit={artifact.definition.graph.exits.includes(selectedNode.id)}
+              outputName={exitOutputName(artifact, selectedNode.id)}
               onChange={(n) => edit(patchNode(artifact, n))}
               onToggleExit={(on) => edit(setExit(artifact, selectedNode.id, on))}
+              onSetExitOutput={(name) => edit(setExitOutputName(artifact, selectedNode.id, name))}
               onDelete={() => {
                 edit(removeNode(artifact, selectedNode.id));
                 setSelected(null);
