@@ -2,8 +2,10 @@
 // 任何「配置项」——引擎的契约来自后端，界面不发明开关。
 
 import type { NodeDescriptor } from "../schema";
+import type { StudioTransport } from "../transport";
 import { Btn, Facts, FactRow, Mk, Tag, Ticks } from "../components/Ui";
 import { CatalogPane, EnvPane } from "../components/Panes";
+import { ConnsPane } from "../components/ConnsPane";
 import type { ConnState } from "../components/Shell";
 
 interface Props {
@@ -11,6 +13,7 @@ interface Props {
   nodeTypes: NodeDescriptor[] | null;
   features: string[];
   caps: Record<string, unknown> | null;
+  transport: StudioTransport;
   onLogout(): void;
   busy: boolean;
 }
@@ -24,7 +27,7 @@ const CONVENTIONS: [string, string][] = [
   ["诊断", "编译期发现无严重等级之分：每一条都拒绝该定义"],
 ];
 
-export function SettingsPage({ conn, nodeTypes, features, caps, onLogout, busy }: Props) {
+export function SettingsPage({ conn, nodeTypes, features, caps, transport, onLogout, busy }: Props) {
   return (
     <div className="settings">
       <div className="grid-a">
@@ -107,6 +110,7 @@ export function SettingsPage({ conn, nodeTypes, features, caps, onLogout, busy }
         </div>
 
         <div className="colR">
+          <ConnsPane transport={transport} />
           <EnvPane conn={conn} features={features} />
           <CatalogPane nodeTypes={nodeTypes} title="受治理类型" />
           <section className="pane">

@@ -84,6 +84,9 @@ function fakeTransport(overrides: Partial<StudioTransport> = {}): StudioTranspor
     resumeRun: vi.fn(async () => ({ run_id: "run-1", status: "running" })),
     events: vi.fn(async () => ({ events: [], next_cursor: null })),
     subscribeEvents: vi.fn(() => ({ close: vi.fn() })),
+    listConnections: vi.fn(async () => []),
+    putConnection: vi.fn(async () => ({ ok: true })),
+    deleteConnection: vi.fn(async () => ({ ok: true })),
     ...overrides,
   };
 }

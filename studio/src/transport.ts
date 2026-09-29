@@ -7,6 +7,7 @@
 import type {
   Artifact,
   ApiError,
+  ConnectionView,
   DraftView,
   NodeDescriptor,
   PublishView,
@@ -58,6 +59,13 @@ export interface StudioTransport {
   nodeOutput(id: string, node: string): Promise<{ output?: unknown }>;
   cancelRun(id: string): Promise<{ ok: boolean }>;
   resumeRun(id: string, answers: Record<string, unknown>): Promise<{ run_id: string; status: string }>;
+
+  listConnections(): Promise<ConnectionView[]>;
+  putConnection(
+    id: string,
+    body: { kind: string; base_url: string; model: string; api_key?: string },
+  ): Promise<{ ok: boolean }>;
+  deleteConnection(id: string): Promise<{ ok: boolean }>;
   events(id: string, afterSeq?: number): Promise<EventPage>;
   subscribeEvents(
     id: string,

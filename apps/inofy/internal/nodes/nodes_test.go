@@ -1,9 +1,11 @@
 package nodes_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -73,9 +75,9 @@ func TestAppNodeCatalog(t *testing.T) {
 		defer fake.Close()
 
 		ex := nodes.New(nodes.Dependencies{
-			Connections: map[string]nodes.Connection{
+			Connections: nodes.NewRegistry(map[string]nodes.Connection{
 				"conn-1": {Kind: "openai", BaseURL: fake.URL, Model: "gpt-test", SecretEnv: "TEST_MODEL_KEY"},
-			},
+			}),
 			Secrets: func(name string) (string, bool) {
 				if name == "TEST_MODEL_KEY" {
 					return "sk-live", true
@@ -101,6 +103,35 @@ func TestAppNodeCatalog(t *testing.T) {
 		}
 	})
 
+	t.Run("model node takes messages from bound input", func(t *testing.T) {
+		var gotBody []byte
+		fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotBody, _ = io.ReadAll(r.Body)
+			w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"from input"},"index":0,"finish_reason":"stop"}]}`))
+		}))
+		defer fake.Close()
+
+		ex := nodes.New(nodes.Dependencies{
+			Connections: nodes.NewRegistry(map[string]nodes.Connection{
+				"c-in": {Kind: "openai", BaseURL: fake.URL, Model: "m", SecretEnv: "K"},
+			}),
+			Secrets: func(string) (string, bool) { return "sk-x", true },
+		})
+		rep, err := ex.Execute(ctx, callOp("inofy.model.openai@1", "model",
+			json.RawMessage(`{"connection_id":"c-in"}`),
+			json.RawMessage(`{"messages":[{"role":"user","content":"asked by caller"}]}`), "k9"))
+		if err != nil {
+			t.Fatalf("model input binding: %v", err)
+		}
+		var out struct{ Content string }
+		if err := json.Unmarshal(rep.Output, &out); err != nil || out.Content != "from input" {
+			t.Fatalf("out: %s", rep.Output)
+		}
+		if !bytes.Contains(gotBody, []byte("asked by caller")) {
+			t.Fatalf("provider saw wrong messages: %s", gotBody)
+		}
+	})
+
 	t.Run("missing secret fails before any provider effect", func(t *testing.T) {
 		var called atomic.Bool
 		fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -109,9 +140,9 @@ func TestAppNodeCatalog(t *testing.T) {
 		}))
 		defer fake.Close()
 		ex := nodes.New(nodes.Dependencies{
-			Connections: map[string]nodes.Connection{
+			Connections: nodes.NewRegistry(map[string]nodes.Connection{
 				"c2": {Kind: "openai", BaseURL: fake.URL, Model: "m", SecretEnv: "MISSING"},
-			},
+			}),
 			Secrets: func(string) (string, bool) { return "", false },
 		})
 		_, err := ex.Execute(ctx, callOp("inofy.model.openai@1", "openai",
@@ -132,9 +163,9 @@ func TestAppNodeCatalog(t *testing.T) {
 		}))
 		defer fake.Close()
 		ex := nodes.New(nodes.Dependencies{
-			Connections: map[string]nodes.Connection{
+			Connections: nodes.NewRegistry(map[string]nodes.Connection{
 				"c3": {Kind: "openai", BaseURL: fake.URL, Model: "m", SecretEnv: "K", Timeout: 30 * time.Millisecond},
-			},
+			}),
 			Secrets: func(string) (string, bool) { return "sk-x", true },
 		})
 		_, err := ex.Execute(ctx, callOp("inofy.model.openai@1", "openai",
@@ -213,4 +244,3 @@ func TestAppNodeCatalog(t *testing.T) {
 		}
 	})
 }
-

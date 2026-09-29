@@ -215,3 +215,14 @@ export interface RunLimits {
   max_pending_admissions?: number;
   [extra: string]: unknown;
 }
+
+// host-approved provider connection (GET /api/v1/connections) —
+// never carries the credential, only whether one is resolvable.
+export interface ConnectionView {
+  id: string;
+  kind: string;
+  base_url: string;
+  model: string;
+  has_secret: boolean;
+  source: "file" | "api";
+}

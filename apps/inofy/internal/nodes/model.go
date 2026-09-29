@@ -44,7 +44,7 @@ func (e *Executor) execModel(ctx context.Context, c inofy.NodeCall) (inofy.NodeR
 			Message: "model node requires config.connection_id",
 		}
 	}
-	conn, ok := e.d.Connections[cfg.ConnectionID]
+	conn, ok := e.d.Connections.Get(cfg.ConnectionID)
 	if !ok || conn.Kind != "openai" {
 		return inofy.NodeReply{}, &inofy.Error{
 			Code:    inofy.ErrInvalidDefinition,
@@ -61,6 +61,24 @@ func (e *Executor) execModel(ctx context.Context, c inofy.NodeCall) (inofy.NodeR
 			Code:    inofy.ErrUnsupportedFeature,
 			Path:    c.Path,
 			Message: "connection credential unavailable",
+		}
+	}
+	// Messages come from config, or from a bound `messages` input
+	// (run input / upstream node) when config leaves them out — a
+	// caller-authored question is data, not definition.
+	if len(cfg.Messages) == 0 && len(c.Input) > 0 {
+		var in struct {
+			Messages []modelMessage `json:"messages"`
+		}
+		if err := json.Unmarshal(c.Input, &in); err == nil {
+			cfg.Messages = in.Messages
+		}
+	}
+	if len(cfg.Messages) == 0 {
+		return inofy.NodeReply{}, &inofy.Error{
+			Code:    inofy.ErrInvalidDefinition,
+			Path:    c.Path,
+			Message: "model node requires config.messages or a bound messages input",
 		}
 	}
 	timeout := conn.Timeout
