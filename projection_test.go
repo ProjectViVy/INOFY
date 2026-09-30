@@ -64,21 +64,38 @@ func TestProjectNodesWaiting(t *testing.T) {
 	}
 }
 
-func TestProjectNodesFailedClearsAllAttempts(t *testing.T) {
-	// node_failed commits with attempt 0 once every retry is spent: it is
-	// terminal for the whole call, so all pending attempts resolve.
+func TestProjectNodesFailedResolvesNamedAttempt(t *testing.T) {
+	// node_failed names the attempt whose verdict settled the call;
+	// earlier retried attempts stay open for reconciliation.
 	got := ProjectNodes(
 		[]Event{
 			ev(EventNodeAttempt, "/graph/nodes/a", 1, ""),
 			ev(EventNodeAttempt, "/graph/nodes/a", 2, ""),
-			ev(EventNodeFailed, "/graph/nodes/a", 0, ""),
+			ev(EventNodeFailed, "/graph/nodes/a", 2, ""),
 		}, nil)
 	n := got[0]
 	if n.State != NodeFailed || n.Attempts != 2 {
 		t.Fatalf("failed projection wrong: %+v", n)
 	}
-	if len(n.UnresolvedAttempts) != 0 {
-		t.Fatalf("terminal failure must resolve attempts: %+v", n.UnresolvedAttempts)
+	if len(n.UnresolvedAttempts) != 1 || n.UnresolvedAttempts[0] != 1 {
+		t.Fatalf("only the terminal attempt resolves: %+v", n.UnresolvedAttempts)
+	}
+}
+
+func TestProjectNodesUnknownOutcomeStaysUnresolved(t *testing.T) {
+	// An unknown outcome emits node_failed with attempt 0: it names no
+	// attempt, so every pending attempt stays open (§8.5).
+	got := ProjectNodes(
+		[]Event{
+			ev(EventNodeAttempt, "/graph/nodes/a", 1, ""),
+			ev(EventNodeFailed, "/graph/nodes/a", 0, ""),
+		}, nil)
+	n := got[0]
+	if n.State != NodeFailed {
+		t.Fatalf("state wrong: %+v", n)
+	}
+	if len(n.UnresolvedAttempts) != 1 || n.UnresolvedAttempts[0] != 1 {
+		t.Fatalf("unknown outcome must keep the attempt open: %+v", n.UnresolvedAttempts)
 	}
 }
 
@@ -86,7 +103,7 @@ func TestProjectNodesDegraded(t *testing.T) {
 	got := ProjectNodes(
 		[]Event{
 			ev(EventNodeAttempt, "/graph/nodes/a", 1, ""),
-			ev(EventNodeDegraded, "/graph/nodes/a", 0, `{"cause":"budget_exceeded"}`),
+			ev(EventNodeDegraded, "/graph/nodes/a", 1, `{"cause":"budget_exceeded"}`),
 		},
 		[]ProtectedResult{{Path: "/graph/nodes/a", Output: json.RawMessage(`"fallback"`)}},
 	)

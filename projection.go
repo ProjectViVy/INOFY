@@ -26,10 +26,11 @@ type NodeProjection struct {
 // lifecycle meaning and are ignored; nodes with no events do not appear
 // (hosts infer not_started from the definition).
 //
-// Terminal semantics: node_failed and node_degraded are committed once a
-// call is spent, so they resolve every pending attempt at the path even
-// though the events carry attempt 0. node_wait resolves only the waiting
-// attempt.
+// Terminal semantics: completed, wait, failed and degraded resolve the
+// attempt the event names (attempt 0 names none, so an unknown outcome
+// keeps its attempt open for host reconciliation — §8.5). Earlier
+// retried attempts carry no terminal event and remain unresolved; that
+// mirrors the RunStore ledger exactly.
 func ProjectNodes(events []Event, results []ProtectedResult) []NodeProjection {
 	nodes := make(map[string]*NodeProjection)
 	pending := make(map[string]map[int]bool)
@@ -43,11 +44,7 @@ func ProjectNodes(events []Event, results []ProtectedResult) []NodeProjection {
 		return n
 	}
 	resolve := func(path string, attempt int) {
-		if attempt > 0 {
-			delete(pending[path], attempt)
-			return
-		}
-		clear(pending[path])
+		delete(pending[path], attempt)
 	}
 	for _, ev := range events {
 		if ev.Path == "" {
