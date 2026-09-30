@@ -209,7 +209,10 @@ func (j *runJournal) executeCall(ctx context.Context, exec NodeExecutor,
 	}
 	opKey := j.ref.RunID + "/" + c.Path
 	var lastErr error
+	lastAttempt := 0
+	outcomeUnknown := false
 	for attempt := 1; attempt <= max; attempt++ {
+		lastAttempt = attempt
 		events := []Event{{Kind: EventNodeAttempt, Path: c.Path, Attempt: attempt}}
 		if attempt == 1 {
 			events = append([]Event{{Kind: EventNodeStarted, Path: c.Path}}, events...)
@@ -304,6 +307,7 @@ func (j *runJournal) executeCall(ctx context.Context, exec NodeExecutor,
 		var u *UnknownOutcomeError
 		if errors.As(callErr, &u) {
 			j.unknown.Store(true)
+			outcomeUnknown = true
 			lastErr = &Error{Code: ErrOutcomeUnknown, Path: c.Path, Err: callErr,
 				Message: "effect outcome is unknown"}
 			break
@@ -324,14 +328,21 @@ func (j *runJournal) executeCall(ctx context.Context, exec NodeExecutor,
 			}
 		}
 	}
-	// All attempts spent or a non-retryable error.
+	// All attempts spent or a non-retryable error. Terminal events name
+	// the attempt whose verdict they settle so the store's unresolved
+	// ledger can close exactly that operation; an unknown outcome names
+	// none, keeping the attempt open for host reconciliation (§8.5).
+	terminalAttempt := lastAttempt
+	if outcomeUnknown {
+		terminalAttempt = 0
+	}
 	if len(c.OnError) > 0 {
 		var lit any
 		if err := json.Unmarshal(c.OnError, &lit); err == nil {
 			if err := definition.ValidateValueJSON(c.OutputSchema, lit); err == nil {
 				if err := j.commit(ctx, c.Path, 0,
 					StateTransition{Expected: RunRunning, Target: RunRunning},
-					[]Event{{Kind: EventNodeDegraded, Path: c.Path,
+					[]Event{{Kind: EventNodeDegraded, Path: c.Path, Attempt: terminalAttempt,
 						Data: json.RawMessage(fmt.Sprintf(`{"cause":%q}`, errCode(lastErr)))}},
 					[]ProtectedResult{{Path: c.Path, Output: c.OnError}}); err != nil {
 					j.recovery.Store(true)
@@ -343,7 +354,7 @@ func (j *runJournal) executeCall(ctx context.Context, exec NodeExecutor,
 	}
 	_ = j.commit(ctx, c.Path, 0,
 		StateTransition{Expected: RunRunning, Target: RunRunning},
-		[]Event{{Kind: EventNodeFailed, Path: c.Path}}, nil)
+		[]Event{{Kind: EventNodeFailed, Path: c.Path, Attempt: terminalAttempt}}, nil)
 	var ie *Error
 	if errors.As(lastErr, &ie) {
 		return nil, lastErr

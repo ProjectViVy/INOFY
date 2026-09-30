@@ -12,8 +12,10 @@ interface Props {
   node: Node;
   descriptor?: NodeDescriptor;
   isExit: boolean;
+  outputName: string;
   onChange(node: Node): void;
   onToggleExit(on: boolean): void;
+  onSetExitOutput(name: string): void;
   onDelete(): void;
 }
 
@@ -53,8 +55,10 @@ export function NodeProperties({
   node,
   descriptor,
   isExit,
+  outputName,
   onChange,
   onToggleExit,
+  onSetExitOutput,
   onDelete,
 }: Props) {
   const props = useMemo(() => schemaProps(descriptor), [descriptor]);
@@ -143,6 +147,26 @@ export function NodeProperties({
           </span>
         </label>
       </div>
+
+      {isExit ? (
+        <div className="in-row" style={{ paddingTop: 0, paddingBottom: 8 }}>
+          <span className="k">输出 output</span>
+          <input
+            key={`out:${outputName}`}
+            className="in"
+            type="text"
+            style={{ flex: 1 }}
+            placeholder="输出名（默认节点 id；留空不绑定）"
+            defaultValue={outputName}
+            onBlur={(e) => {
+              if (e.target.value !== outputName) onSetExitOutput(e.target.value);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") e.currentTarget.blur();
+            }}
+          />
+        </div>
+      ) : null}
 
       {node.kind === "call" ? (
         <>

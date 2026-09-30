@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -65,7 +66,16 @@ func TestEinoModuleVersionPinned(t *testing.T) {
 			return
 		}
 	}
-	t.Fatal("eino not found in build info")
+	// Some Go test binaries omit dependency modules from their build info.
+	// Verify the resolved module graph rather than treating that omission as
+	// a version mismatch.
+	out, err := exec.Command("go", "list", "-m", "-f", "{{.Version}}", "github.com/cloudwego/eino").Output()
+	if err != nil {
+		t.Fatalf("resolve Eino module: %v", err)
+	}
+	if got := strings.TrimSpace(string(out)); got != pinnedEino {
+		t.Fatalf("eino version %s, want %s", got, pinnedEino)
+	}
 }
 
 type g2Probe struct {
