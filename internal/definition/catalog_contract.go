@@ -37,13 +37,26 @@ func CatalogContractDoc(defDoc map[string]any, types []TypeRef) (map[string]any,
 }
 
 func collectUsedTypes(value any, used map[string]bool) {
-	walkJSON(value, func(node map[string]any) {
-		if kind, _ := asString(node["kind"]); kind == "call" {
+	graph, ok := asObject(value)
+	if !ok {
+		return
+	}
+	nodes, _ := asArray(graph["nodes"])
+	for _, raw := range nodes {
+		node, ok := asObject(raw)
+		if !ok {
+			continue
+		}
+		kind, _ := asString(node["kind"])
+		if kind == "call" {
 			if typeID, ok := asString(node["type"]); ok && typeID != "" {
 				used[typeID] = true
 			}
 		}
-	})
+		if kind == "repeat" {
+			collectUsedTypes(node["body"], used)
+		}
+	}
 }
 
 func descriptorDoc(t TypeRef) (map[string]any, error) {
