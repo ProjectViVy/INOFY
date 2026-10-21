@@ -6,12 +6,11 @@ import (
 	"fmt"
 	"runtime/debug"
 
-	"github.com/ProjectViVy/inofy/internal/definition"
 	"github.com/ProjectViVy/inofy/internal/einoruntime"
 )
 
-// compilerVersion is the INOFY compiler identity bound into
-// ProgramDigest (architecture §4.3).
+// compilerVersion identifies the compiler build recorded with the
+// owner-allocated program revision.
 const compilerVersion = "inofy/v0.1"
 
 // Compile performs structural validation and compilation without I/O
@@ -53,10 +52,7 @@ func Compile(ctx context.Context, def Definition, catalog Catalog, options Compi
 	if err != nil {
 		return nil, nil, adaptError(err)
 	}
-	meta, err := programMeta(def, catalog)
-	if err != nil {
-		return nil, nil, err
-	}
+	meta := programMeta(options.ProgramID)
 	return &Program{meta: meta, rt: rt, compileLimits: lim}, nil, nil
 }
 
@@ -80,39 +76,19 @@ func typeInfos(catalog Catalog) map[string]einoruntime.TypeInfo {
 	return out
 }
 
-// programMeta binds the program identity: definition and catalog
-// digests, compiler version, and the exact Eino build — all hashed
-// into ProgramDigest in normal-v1 form.
-func programMeta(def Definition, catalog Catalog) (ProgramMeta, error) {
-	dd, err := DefinitionDigest(def)
-	if err != nil {
-		return ProgramMeta{}, err
+// programMeta records the identity allocated by the definition owner.
+// INOFY keeps the compiler/build facts as ordinary metadata and never
+// derives identity from content.
+func programMeta(programID string) ProgramMeta {
+	return ProgramMeta{
+		ProgramID:       programID,
+		CompilerVersion: compilerVersion,
+		EinoBuild:       einoBuild(),
 	}
-	cd, err := CatalogDigest(def, catalog)
-	if err != nil {
-		return ProgramMeta{}, err
-	}
-	meta := ProgramMeta{
-		DefinitionDigest: dd,
-		CatalogDigest:    cd,
-		CompilerVersion:  compilerVersion,
-		EinoBuild:        einoBuild(),
-	}
-	norm, err := definition.Canonical(map[string]any{
-		"compiler_version":  meta.CompilerVersion,
-		"eino_build":        meta.EinoBuild,
-		"definition_digest": meta.DefinitionDigest,
-		"catalog_digest":    meta.CatalogDigest,
-	})
-	if err != nil {
-		return ProgramMeta{}, err
-	}
-	meta.ProgramDigest = definition.DigestBytes(norm)
-	return meta, nil
 }
 
-// einoBuild reports the exact eino module version linked into the
-// binary — the ProgramDigest binds the build identity, not a claim.
+// einoBuild reports the exact Eino module version linked into the
+// binary; checkpoints bind this build metadata separately from ProgramID.
 func einoBuild() string {
 	bi, ok := debug.ReadBuildInfo()
 	if !ok {

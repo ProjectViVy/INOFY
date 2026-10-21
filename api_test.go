@@ -26,7 +26,7 @@ func TestZeroValueCatalogRejected(t *testing.T) {
 			Exits: []string{"echo"},
 		},
 	}
-	if _, _, err := inofy.Compile(context.Background(), def, catalog, inofy.CompileOptions{}); err == nil {
+	if _, _, err := inofy.Compile(context.Background(), def, catalog, inofy.CompileOptions{ProgramID: "test-program"}); err == nil {
 		t.Fatal("Compile accepted a zero-value catalog")
 	}
 }
@@ -104,7 +104,7 @@ func compileTestProgram(t *testing.T, def inofy.Definition) *inofy.Program {
 	if err != nil {
 		t.Fatalf("catalog: %v", err)
 	}
-	prog, diags, err := inofy.Compile(context.Background(), def, catalog, inofy.CompileOptions{})
+	prog, diags, err := inofy.Compile(context.Background(), def, catalog, inofy.CompileOptions{ProgramID: "test-workflow/1"})
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
@@ -119,7 +119,7 @@ func compileTestProgram(t *testing.T, def inofy.Definition) *inofy.Program {
 
 func runRequest(prog *inofy.Program, input json.RawMessage) inofy.RunRequest {
 	return inofy.RunRequest{
-		Ref:   inofy.ExecutionRef{RunID: "run-1", ProgramDigest: prog.Meta().ProgramDigest},
+		Ref:   inofy.ExecutionRef{RunID: "run-1", ProgramID: prog.Meta().ProgramID},
 		Input: input,
 	}
 }
@@ -148,7 +148,7 @@ func TestProgramDAGPublic(t *testing.T) {
 	}
 	prog := compileTestProgram(t, def)
 
-	if prog.Meta().ProgramDigest == "" || prog.Meta().EinoBuild == "" {
+	if prog.Meta().ProgramID != "test-workflow/1" || prog.Meta().EinoBuild == "" {
 		t.Fatalf("program meta incomplete: %#v", prog.Meta())
 	}
 
@@ -182,12 +182,12 @@ func TestProgramDAGPublic(t *testing.T) {
 		}
 	}
 
-	// Mismatched digest is rejected before any work.
+	// Mismatched owner identity is rejected before any work.
 	bad := runRequest(prog, json.RawMessage(`{}`))
-	bad.Ref.ProgramDigest = "bogus"
+	bad.Ref.ProgramID = "another-workflow/1"
 	res, err = prog.Run(ctx, bad, inofy.Bindings{Nodes: exec})
 	if err == nil || res.Status != inofy.RunFailed {
-		t.Fatalf("mismatched digest run got %v", res.Status)
+		t.Fatalf("mismatched program identity run got %v", res.Status)
 	}
 }
 

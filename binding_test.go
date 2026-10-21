@@ -40,7 +40,7 @@ func TestBindingMarshalPreservesEmptyPointer(t *testing.T) {
 }
 
 // An authored root-pointer output stays stable through the
-// decode -> canonical digest -> decode cycle SaveDraft performs.
+// decode -> canonical value normalization -> decode cycle SaveDraft performs.
 func TestArtifactRoundTripPreservesRootPointerBinding(t *testing.T) {
 	doc := `{"definition":{"schema_version":"inofy.workflow/v1","graph":{
 		"nodes":[{"id":"a","kind":"call","type":"inofy.value@1"}],

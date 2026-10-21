@@ -99,7 +99,7 @@ func TestDraftCAS(t *testing.T) {
 		}
 	})
 
-	t.Run("layout-only edit changes artifact digest, not semantic digest", func(t *testing.T) {
+	t.Run("layout-only edit changes artifact value, not definition value", func(t *testing.T) {
 		repo := definitions.NewMemoryRepository()
 		svc := definitions.NewService(repo)
 		a1 := artifact("v1")
@@ -111,11 +111,27 @@ func TestDraftCAS(t *testing.T) {
 		if err != nil {
 			t.Fatalf("layout save: %v", err)
 		}
-		if d2.ArtifactDigest == d1.ArtifactDigest {
-			t.Fatal("layout edit did not change artifact digest")
+		a1Value, err := inofy.NormalizeArtifact(d1.Artifact)
+		if err != nil {
+			t.Fatal(err)
 		}
-		if d2.DefinitionDigest != d1.DefinitionDigest {
-			t.Fatal("layout edit changed semantic definition digest")
+		a2Value, err := inofy.NormalizeArtifact(d2.Artifact)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(a1Value) == string(a2Value) {
+			t.Fatal("layout edit did not change artifact value")
+		}
+		d1Value, err := inofy.Normalize(d1.Artifact.Definition)
+		if err != nil {
+			t.Fatal(err)
+		}
+		d2Value, err := inofy.Normalize(d2.Artifact.Definition)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(d1Value) != string(d2Value) {
+			t.Fatal("layout edit changed definition value")
 		}
 	})
 

@@ -3,6 +3,7 @@ package storage_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,13 +15,13 @@ import (
 
 func admitCommit(runID string) inofy.RunCommit {
 	data, _ := json.Marshal(map[string]any{
-		"input_digest": "sha256:abc",
-		"limits":       inofy.Limits{MaxAttemptsPerCall: 3},
+		"limits": inofy.Limits{MaxAttemptsPerCall: 3},
 	})
 	return inofy.RunCommit{
-		CommitID:   runID + "/0/admit/0/1",
-		Events:     []inofy.Event{{Kind: inofy.EventRunAdmitted, Data: data}},
-		Transition: inofy.StateTransition{Expected: "", Target: inofy.RunAdmitted},
+		CommitID:      runID + "/0/admit/0/1",
+		Events:        []inofy.Event{{Kind: inofy.EventRunAdmitted, Data: data}},
+		Transition:    inofy.StateTransition{Expected: "", Target: inofy.RunAdmitted},
+		AdmittedInput: json.RawMessage(`{"value":1}`),
 	}
 }
 
@@ -34,7 +35,7 @@ func TestSQLiteAtomicCommitAndCAS(t *testing.T) {
 		}
 		return s, dir + "/app.db"
 	}
-	ref := inofy.ExecutionRef{RunID: "r", ProgramDigest: "p1"}
+	ref := inofy.ExecutionRef{RunID: "r", ProgramID: "p1"}
 
 	t.Run("fresh install, reopen keeps evidence", func(t *testing.T) {
 		s, path := open(t)
@@ -55,7 +56,7 @@ func TestSQLiteAtomicCommitAndCAS(t *testing.T) {
 		if err != nil {
 			t.Fatalf("load after reopen: %v", err)
 		}
-		if st.Status != inofy.RunAdmitted || st.InputDigest != "sha256:abc" {
+		if st.Status != inofy.RunAdmitted || string(st.AdmittedInput) != `{"value":1}` {
 			t.Fatalf("state lost: %#v", st)
 		}
 	})
@@ -74,6 +75,24 @@ func TestSQLiteAtomicCommitAndCAS(t *testing.T) {
 		}
 	})
 
+	t.Run("same CommitID replay normalizes raw JSON object order", func(t *testing.T) {
+		s, _ := open(t)
+		defer s.Close()
+		c := admitCommit("r")
+		c.Events[0].Data = json.RawMessage(`{"b":2,"a":1}`)
+		c.AdmittedInput = json.RawMessage(`{"b":2,"a":1}`)
+		first, err := s.Commit(ctx, ref, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.Events[0].Data = json.RawMessage(`{"a":1,"b":2}`)
+		c.AdmittedInput = json.RawMessage(`{"a":1,"b":2}`)
+		got, err := s.Commit(ctx, ref, c)
+		if err != nil || got != first {
+			t.Fatalf("semantically identical redelivery: receipt=%#v err=%v", got, err)
+		}
+	})
+
 	t.Run("same CommitID different body is idempotency_conflict", func(t *testing.T) {
 		s, _ := open(t)
 		defer s.Close()
@@ -85,6 +104,42 @@ func TestSQLiteAtomicCommitAndCAS(t *testing.T) {
 		c.Transition = inofy.StateTransition{Expected: inofy.RunAdmitted, Target: inofy.RunRunning}
 		if _, err := s.Commit(ctx, ref, c); err == nil {
 			t.Fatal("changed body under same commit id accepted")
+		}
+	})
+
+	t.Run("same CommitID with different admitted input conflicts", func(t *testing.T) {
+		s, _ := open(t)
+		defer s.Close()
+		c := admitCommit("r")
+		if _, err := s.Commit(ctx, ref, c); err != nil {
+			t.Fatal(err)
+		}
+		c.AdmittedInput = json.RawMessage(`{"value":2}`)
+		if _, err := s.Commit(ctx, ref, c); err == nil {
+			t.Fatal("changed admitted input under same commit id accepted")
+		} else {
+			var ie *inofy.Error
+			if !errors.As(err, &ie) || ie.Code != inofy.ErrIdempotencyConflict {
+				t.Fatalf("wrong error for changed admitted input: %v", err)
+			}
+		}
+	})
+
+	t.Run("admitted SQL binding cannot change from empty", func(t *testing.T) {
+		s, _ := open(t)
+		defer s.Close()
+		if _, err := s.Commit(ctx, ref, admitCommit("r")); err != nil {
+			t.Fatal(err)
+		}
+		bound := ref
+		bound.HostBindingID = "later-host"
+		_, err := s.Commit(ctx, bound, inofy.RunCommit{
+			CommitID: "r/0/start/0/2", Events: []inofy.Event{{Kind: inofy.EventRunStarted}},
+			Transition: inofy.StateTransition{Expected: inofy.RunAdmitted, Target: inofy.RunRunning},
+		})
+		var ie *inofy.Error
+		if !errors.As(err, &ie) || ie.Code != inofy.ErrCheckpointIncompatible {
+			t.Fatalf("changed host binding accepted or misclassified: %v", err)
 		}
 	})
 
@@ -149,7 +204,7 @@ func TestSQLiteAtomicCommitAndCAS(t *testing.T) {
 			"interrupts": map[string]string{"req-a": "int-1"},
 			"gates":      []string{"g-1"},
 		})
-		env := &inofy.CheckpointEnvelope{Checksum: "cs", Payload: []byte("cp")}
+		env := &inofy.CheckpointEnvelope{RunID: "r", ProgramID: ref.ProgramID, Payload: []byte("cp")}
 		if _, err := s.Commit(ctx, ref, inofy.RunCommit{
 			CommitID: "r/0/w/1/3",
 			Events: []inofy.Event{

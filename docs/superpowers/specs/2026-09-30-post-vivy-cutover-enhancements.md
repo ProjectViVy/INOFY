@@ -18,7 +18,7 @@ This document records candidates scoped to **INOFY itself** (engine, schema, hos
 
 ### E1 — Recovery UX surface is engine-only (real gap)
 
-**Evidence.** `inofy.resumeRun` exists in the RPC surface, the typed client, and the engine (`ResumeKey`, resume-answers digest, `EventRunResumed`); `TestINOFYWorkflowResumesAdmittedAfterCrash` proves crash-between-admission-and-launch recovery. But `engine_status:"recovery_required"` is only observable — the ViVy module renders it as a badge with no resume affordance, and nothing in the product contract documents who is allowed to resume a stuck run.
+**Evidence.** `inofy.resumeRun` exists in the RPC surface, the typed client, and the engine (`ResumeKey`, exact resume-answer values, `EventRunResumed`); `TestINOFYWorkflowResumesAdmittedAfterCrash` proves crash-between-admission-and-launch recovery. But `engine_status:"recovery_required"` is only observable — the ViVy module renders it as a badge with no resume affordance, and nothing in the product contract documents who is allowed to resume a stuck run.
 
 **Proposal.** Keep engine semantics unchanged; define the resume contract's *consumers*:
 
@@ -31,7 +31,7 @@ This document records candidates scoped to **INOFY itself** (engine, schema, hos
 
 **Proposal.** Evaluate a `workflow.call` node type in a future schema revision:
 
-- Node config references `{workflow, revision}` or a digest; the engine admits it only under the host's depth ceiling (ViVy already enforces depth; make the ceiling a declared limit instead of a hard reject at admission).
+- Node config references `{workflow, revision}`; the engine admits it only under the host's depth ceiling (ViVy already enforces depth; make the ceiling a declared limit instead of a hard reject at admission).
 - Semantics to pin down before any code: budget ceiling inheritance, cancel propagation into the nested run, output projection (`{source: node, pointer}` over the nested run's declared outputs), idempotency/operation-key naming for retry, and whether a nested run is a governed child of the workflow run (consistent with current node=child-run model).
 - Failure semantics: nested `recovery_required` must map onto the parent's node state, not leak a second engine surface.
 

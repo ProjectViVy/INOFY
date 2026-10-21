@@ -124,7 +124,9 @@ func TestRunHTTPAndSSE(t *testing.T) {
 		if r1.Code != 202 {
 			t.Fatalf("admit: %d %s", r1.Code, r1.Body.String())
 		}
-		var a1, a2 struct{ RunID string `json:"run_id"` }
+		var a1, a2 struct {
+			RunID string `json:"run_id"`
+		}
 		json.Unmarshal(r1.Body.Bytes(), &a1)
 		r2 := f.do("POST", "/api/v1/runs",
 			`{"workflow":"wf3","revision":1,"input":{"x":1}}`,
@@ -134,14 +136,12 @@ func TestRunHTTPAndSSE(t *testing.T) {
 			t.Fatalf("dup key new run: %s vs %s", a1.RunID, a2.RunID)
 		}
 		waitFor(t, f.fixtureStore(), a1.RunID, inofy.RunSucceeded, 5*time.Second)
-		// Same key, different input → still same run (key is the contract).
+		// Same key with different intended input is a conflict, not a replay.
 		r3 := f.do("POST", "/api/v1/runs",
 			`{"workflow":"wf3","revision":1,"input":{"x":2}}`,
 			map[string]string{"Idempotency-Key": "k1"})
-		var a3 struct{ RunID string `json:"run_id"` }
-		json.Unmarshal(r3.Body.Bytes(), &a3)
-		if a3.RunID != a1.RunID {
-			t.Fatal("same key different input spawned new run")
+		if r3.Code != http.StatusConflict || !strings.Contains(r3.Body.String(), string(inofy.ErrIdempotencyConflict)) {
+			t.Fatalf("same key different input: got %d %s", r3.Code, r3.Body.String())
 		}
 	})
 
@@ -160,7 +160,9 @@ func TestRunHTTPAndSSE(t *testing.T) {
 	t.Run("committed events only + Last-Event-ID replay", func(t *testing.T) {
 		rec := f.do("GET", "/api/v1/runs", "", nil)
 		var page struct {
-			Items []struct{ RunID string `json:"run_id"` } `json:"items"`
+			Items []struct {
+				RunID string `json:"run_id"`
+			} `json:"items"`
 		}
 		json.Unmarshal(rec.Body.Bytes(), &page)
 		if len(page.Items) == 0 {
@@ -193,7 +195,9 @@ func TestRunHTTPAndSSE(t *testing.T) {
 		rec = f.do("GET", "/api/v1/runs/"+runID+"/events?after="+
 			fmt.Sprint(env.Events[0].Seq), "", nil)
 		var env2 struct {
-			Events []struct{ Seq uint64 `json:"seq"` } `json:"events"`
+			Events []struct {
+				Seq uint64 `json:"seq"`
+			} `json:"events"`
 		}
 		json.Unmarshal(rec.Body.Bytes(), &env2)
 		if len(env2.Events) == 0 || env2.Events[len(env2.Events)-1].Seq != last {
@@ -214,7 +218,9 @@ func TestRunHTTPAndSSE(t *testing.T) {
 		if rec.Code != 202 {
 			t.Fatalf("admit: %d %s", rec.Code, rec.Body.String())
 		}
-		var a struct{ RunID string `json:"run_id"` }
+		var a struct {
+			RunID string `json:"run_id"`
+		}
 		json.Unmarshal(rec.Body.Bytes(), &a)
 		waitFor(t, fw.fixtureStore(), a.RunID, inofy.RunWaiting, 5*time.Second)
 		// Resume with the complete answer set.
@@ -253,7 +259,9 @@ func TestRunHTTPAndSSE(t *testing.T) {
 			t.Fatal(err)
 		}
 		var page struct {
-			Items []struct{ RunID string `json:"run_id"` } `json:"items"`
+			Items []struct {
+				RunID string `json:"run_id"`
+			} `json:"items"`
 		}
 		json.NewDecoder(resp.Body).Decode(&page)
 		resp.Body.Close()
@@ -295,7 +303,9 @@ func TestRunHTTPAndSSE(t *testing.T) {
 			t.Fatal(err)
 		}
 		var env struct {
-			Events []struct{ Seq uint64 `json:"seq"` } `json:"events"`
+			Events []struct {
+				Seq uint64 `json:"seq"`
+			} `json:"events"`
 		}
 		json.NewDecoder(resp2.Body).Decode(&env)
 		resp2.Body.Close()
@@ -313,7 +323,9 @@ func TestRunHTTPAndSSE(t *testing.T) {
 		rec := f.do("POST", "/api/v1/runs",
 			`{"workflow":"wf3","revision":1,"input":{}}`,
 			map[string]string{"Idempotency-Key": "cancel-k"})
-		var a struct{ RunID string `json:"run_id"` }
+		var a struct {
+			RunID string `json:"run_id"`
+		}
 		json.Unmarshal(rec.Body.Bytes(), &a)
 		r1 := f.do("POST", "/api/v1/runs/"+a.RunID+"/cancel", "", nil)
 		r2 := f.do("POST", "/api/v1/runs/"+a.RunID+"/cancel", "", nil)

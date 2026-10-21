@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	inofy "github.com/ProjectViVy/inofy"
+	"github.com/ProjectViVy/inofy/definitions"
 )
 
 // postRun admits a run: an exact published revision
@@ -39,6 +40,7 @@ func (h *handler) postRun(w http.ResponseWriter, r *http.Request) {
 	}
 	var source json.RawMessage
 	var revision uint64
+	var programID string
 	switch {
 	case body.Revision > 0:
 		rev, err := h.d.Store.GetRevision(r.Context(), body.Workflow, body.Revision)
@@ -48,6 +50,7 @@ func (h *handler) postRun(w http.ResponseWriter, r *http.Request) {
 		}
 		source, _ = json.Marshal(rev.Artifact)
 		revision = rev.Revision
+		programID = rev.ProgramID
 	case body.DraftETag != "":
 		d, err := h.d.Store.GetDraft(r.Context(), body.Workflow)
 		if err != nil {
@@ -59,6 +62,7 @@ func (h *handler) postRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		source, _ = json.Marshal(d.Artifact)
+		programID = definitions.DraftProgramID(body.Workflow, d.ETag)
 	default:
 		writeError(w, http.StatusBadRequest, "invalid_request", "revision or draft_etag required", nil)
 		return
@@ -67,7 +71,7 @@ func (h *handler) postRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "dispatcher not wired", nil)
 		return
 	}
-	runID, err := h.d.Dispatch.Admit(r.Context(), "owner", body.Workflow, revision, source, body.Input, key)
+	runID, err := h.d.Dispatch.Admit(r.Context(), "owner", body.Workflow, revision, programID, source, body.Input, key)
 	if err != nil {
 		mapErr(w, err)
 		return
@@ -162,7 +166,7 @@ func (h *handler) postResume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The admitted input rides along — a suspend during resume
-	// recomputes the checkpoint input digest against it.
+	// compares checkpoint input against the exact admitted value.
 	req.Ref = st.Ref
 	req.Resume = &inofy.ResumeRequest{
 		IdempotencyKey: r.Header.Get("Idempotency-Key"),

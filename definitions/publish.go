@@ -2,9 +2,6 @@ package definitions
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 
 	inofy "github.com/ProjectViVy/inofy"
 )
@@ -42,17 +39,10 @@ func (s *Service) Publish(ctx context.Context, workflowID, expectedETag string, 
 	if err != nil {
 		return Revision{}, err
 	}
-	_ = prog // compile is validation only; digests live in meta
-	ucd, err := usedCatalogDigest(used)
-	if err != nil {
-		return Revision{}, err
-	}
+	_ = prog // compile is validation only; the revision owner stores exact values.
 	rev := Revision{
 		WorkflowID:          workflowID,
 		Artifact:            d.Artifact,
-		DefinitionDigest:    d.DefinitionDigest,
-		ArtifactDigest:      d.ArtifactDigest,
-		UsedCatalogDigest:   ucd,
 		UsedImplementations: used,
 	}
 	return s.repo.PublishCAS(ctx, workflowID, expectedETag, rev)
@@ -99,15 +89,4 @@ func usedImplementations(def inofy.Definition, c inofy.Catalog) (map[string]stri
 		return nil, err
 	}
 	return used, nil
-}
-
-// usedCatalogDigest binds the exact used type→impl map, never the
-// whole catalog — unused impl changes don't force republication.
-func usedCatalogDigest(used map[string]string) (string, error) {
-	b, err := json.Marshal(used)
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256(b)
-	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }

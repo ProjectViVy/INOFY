@@ -1,11 +1,12 @@
 package inofy
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/ProjectViVy/inofy/internal/definition"
@@ -21,15 +22,12 @@ type Program struct {
 	compileLimits Limits
 }
 
-// ProgramMeta binds the program to its inputs: definition and catalog
-// digests, the INOFY compiler/format version and the exact Eino build
-// identity (architecture §4.3).
+// ProgramMeta reports the immutable identity allocated by the definition
+// owner and the compiler/build that produced this in-memory program.
 type ProgramMeta struct {
-	DefinitionDigest string `json:"definition_digest"`
-	CatalogDigest    string `json:"catalog_digest"`
-	ProgramDigest    string `json:"program_digest"`
-	CompilerVersion  string `json:"compiler_version"`
-	EinoBuild        string `json:"eino_build"`
+	ProgramID       string `json:"program_id,omitempty"`
+	CompilerVersion string `json:"compiler_version"`
+	EinoBuild       string `json:"eino_build"`
 }
 
 // Meta reports the frozen program identity.
@@ -40,16 +38,22 @@ func (p *Program) Meta() ProgramMeta { return p.meta }
 // wider than the compile ceiling is rejected. Resume is a S06 contract
 // and reports unsupported_feature until then.
 func (p *Program) Run(ctx context.Context, request RunRequest, bindings Bindings) (RunResult, error) {
-	if p == nil || p.rt == nil || request.Ref.ProgramDigest != p.meta.ProgramDigest {
+	if p == nil || p.rt == nil || p.meta.ProgramID == "" || request.Ref.ProgramID != p.meta.ProgramID {
 		return RunResult{Status: RunFailed}, &Error{
 			Code:    ErrCheckpointIncompatible,
 			Path:    request.Ref.RunID,
-			Message: "run request does not match the compiled program identity",
+			Message: "run request does not match the owner-allocated program identity",
 		}
 	}
 	if request.Resume != nil {
 		return p.resume(ctx, request, bindings)
 	}
+	input, err := NormalizeJSONValue(request.Input)
+	if err != nil {
+		return RunResult{Status: RunFailed}, &Error{Code: ErrInvalidDefinition, Path: request.Ref.RunID,
+			Err: err, Message: "run input is not a valid JSON value"}
+	}
+	request.Input = input
 	if bindings.Nodes == nil {
 		return RunResult{Status: RunFailed}, &Error{
 			Code:    ErrBindingMissing,
@@ -71,6 +75,12 @@ func (p *Program) Run(ctx context.Context, request RunRequest, bindings Bindings
 	// or waiting runs cannot be re-admitted by a fresh Run.
 	if bindings.Runs != nil {
 		if st, lerr := bindings.Runs.Load(ctx, request.Ref.RunID); lerr == nil {
+			if st.Ref.ProgramID != request.Ref.ProgramID ||
+				((st.Status != "queued" && st.Status != "claimed") && st.Ref.HostBindingID != request.Ref.HostBindingID) ||
+				!sameJSON(st.AdmittedInput, request.Input) {
+				return RunResult{Status: RunFailed}, &Error{Code: ErrIdempotencyConflict,
+					Path: request.Ref.RunID, Message: "run ID was admitted with different program or input values"}
+			}
 			switch st.Status {
 			case RunRunning:
 				// Uncommitted effects may exist; only the ledger can
@@ -79,17 +89,17 @@ func (p *Program) Run(ctx context.Context, request RunRequest, bindings Bindings
 				if cerr := j.commit(ctx, request.Ref.RunID, 0,
 					StateTransition{Expected: RunRunning, Target: RunRecoveryRequired},
 					[]Event{{Kind: EventRunRecoveryRequired}}, nil); cerr != nil {
-					 return RunResult{Status: RunFailed}, cerr
+					return RunResult{Status: RunFailed}, cerr
 				}
 				return RunResult{
-					Status: RunRecoveryRequired,
-					Diagnostics: []Diagnostic{{
-						Path:    request.Ref.RunID,
-						Code:    string(ErrOutcomeUnknown),
-						Message: "run record recovered running on reopen; unresolved effects require host reconciliation",
-					}},
-				}, &Error{Code: ErrOutcomeUnknown, Path: request.Ref.RunID,
-					Message: "running run recovered on reopen"}
+						Status: RunRecoveryRequired,
+						Diagnostics: []Diagnostic{{
+							Path:    request.Ref.RunID,
+							Code:    string(ErrOutcomeUnknown),
+							Message: "run record recovered running on reopen; unresolved effects require host reconciliation",
+						}},
+					}, &Error{Code: ErrOutcomeUnknown, Path: request.Ref.RunID,
+						Message: "running run recovered on reopen"}
 			case RunWaiting:
 				return RunResult{Status: RunFailed}, &Error{
 					Code:    ErrRevisionConflict,
@@ -109,19 +119,21 @@ func (p *Program) Run(ctx context.Context, request RunRequest, bindings Bindings
 					Message: "terminal run cannot be re-admitted",
 				}
 			}
+		} else if !isNotFound(lerr) {
+			return RunResult{Status: RunFailed}, &Error{Code: ErrStorageFailed, Path: request.Ref.RunID,
+				Err: lerr, Message: "run store load failed before admission"}
 		}
 	}
 	// Admission and start are visible transitions, never silent
 	// progress (§8.1): a failed admission commit cannot start work.
-	// The admitted input digest and effective limits ride in the
-	// admission event so resume can re-verify both (§8.4).
+	// Limits are a public event projection; the exact admitted input is
+	// stored privately by the existing RunStore owner.
 	admitData, _ := json.Marshal(map[string]any{
-		"input_digest": inputDigest(request.Input),
-		"limits":       lim,
+		"limits": lim,
 	})
-	if err := j.commit(ctx, request.Ref.RunID, 0,
+	if err := j.commitAdmission(ctx, request.Ref.RunID, 0,
 		StateTransition{Expected: "", Target: RunAdmitted},
-		[]Event{{Kind: EventRunAdmitted, Data: admitData}}, nil); err != nil {
+		[]Event{{Kind: EventRunAdmitted, Data: admitData}}, request.Input); err != nil {
 		return RunResult{Status: RunFailed}, err
 	}
 	if err := j.commit(ctx, request.Ref.RunID, 0,
@@ -207,15 +219,14 @@ func (p *Program) suspend(ctx context.Context, request RunRequest,
 	}
 	env := &CheckpointEnvelope{
 		ContinuationGeneration: j.gen,
-		DefinitionDigest:       p.meta.DefinitionDigest,
-		ProgramDigest:          p.meta.ProgramDigest,
+		RunID:                  request.Ref.RunID,
+		ProgramID:              request.Ref.ProgramID,
+		HostBindingID:          request.Ref.HostBindingID,
 		EinoBuild:              p.meta.EinoBuild,
 		SerializerVersion:      serializerVersion,
-		InputDigest:            inputDigest(request.Input),
 		Usage:                  j.usage(),
 		EventBoundary:          j.ord.Load(),
 		Payload:                payload,
-		Checksum:               payloadChecksum(payload),
 	}
 	j.clock.Pause()
 	if err := j.commitEnvelope(ctx,
@@ -289,24 +300,6 @@ func itoa(i int) string {
 	return fmt.Sprintf("%d", i)
 }
 
-// inputDigest is the canonical digest of the admitted run input.
-func inputDigest(input json.RawMessage) string {
-	var doc any
-	if err := json.Unmarshal(input, &doc); err != nil {
-		return ""
-	}
-	norm, err := definition.Canonical(doc)
-	if err != nil {
-		return ""
-	}
-	return definition.DigestBytes(norm)
-}
-
-func payloadChecksum(b []byte) string {
-	sum := sha256.Sum256(b)
-	return "sha256:" + hex.EncodeToString(sum[:])
-}
-
 // resume is the authorized continuation path (§8.4): the stored
 // waiting snapshot must prove every identity before the run's writer
 // epoch claims the next generation, all outstanding waits must be
@@ -331,6 +324,10 @@ func (p *Program) resume(ctx context.Context, request RunRequest, bindings Bindi
 	if err != nil {
 		return RunResult{Status: RunFailed}, err
 	}
+	if st.Ref.ProgramID != request.Ref.ProgramID || st.Ref.HostBindingID != request.Ref.HostBindingID {
+		return RunResult{Status: RunFailed}, &Error{Code: ErrCheckpointIncompatible,
+			Path: request.Ref.RunID, Message: "resume request does not match the admitted program or host binding identity"}
+	}
 	// Replaying an already-claimed resume: an identical authorized
 	// answer set returns the recorded outcome instead of re-executing.
 	if st.Status != RunWaiting {
@@ -347,12 +344,17 @@ func (p *Program) resume(ctx context.Context, request RunRequest, bindings Bindi
 	if err := verifyEnvelope(env, st, p.meta); err != nil {
 		return RunResult{Status: RunFailed}, err
 	}
-	if len(request.Input) > 0 && inputDigest(request.Input) != st.InputDigest {
+	if len(request.Input) > 0 && !sameJSON(request.Input, st.AdmittedInput) {
 		return RunResult{Status: RunFailed}, &Error{
 			Code:    ErrCheckpointIncompatible,
 			Path:    request.Ref.RunID,
-			Message: "resume input does not match the admitted input digest",
+			Message: "resume input does not match the admitted input value",
 		}
+	}
+	input := st.AdmittedInput
+	if len(input) == 0 {
+		return RunResult{Status: RunFailed}, &Error{Code: ErrCheckpointIncompatible,
+			Path: request.Ref.RunID, Message: "run store has no admitted input value"}
 	}
 	// Every outstanding wait must be answered together; unknown or
 	// schema-violating answers reject the whole resume.
@@ -363,6 +365,11 @@ func (p *Program) resume(ctx context.Context, request RunRequest, bindings Bindi
 			Path:    request.Ref.RunID,
 			Message: "resume must answer every outstanding wait",
 		}
+	}
+	normalizedAnswers, err := normalizeAnswers(answers)
+	if err != nil {
+		return RunResult{Status: RunFailed}, &Error{Code: ErrSchemaMismatch, Path: request.Ref.RunID,
+			Err: err, Message: "resume answers are not canonical JSON values"}
 	}
 	resumeData := map[string]any{}
 	for _, w := range st.Waits {
@@ -413,7 +420,7 @@ func (p *Program) resume(ctx context.Context, request RunRequest, bindings Bindi
 		lim = effectiveLimits(request.Limits)
 	}
 	// The claim commit carries a fresh nonce: two concurrent resumes
-	// with identical answers hash to the same CommitID but different
+	// with identical answers encode to the same CommitID but different
 	// bodies, so the loser is rejected by idempotency_conflict and
 	// never runs an effect. A genuine retry of the SAME claim (same
 	// caller intent) is matched on resumption via ResumeKey above.
@@ -427,14 +434,12 @@ func (p *Program) resume(ctx context.Context, request RunRequest, bindings Bindi
 		return RunResult{Status: RunFailed}, err
 	}
 	claim, _ := json.Marshal(map[string]any{
-		"idempotency_key": request.Resume.IdempotencyKey,
-		"generation":      gen,
-		"answers_digest":  answersDigest(answers),
-		"claim_nonce":     hex.EncodeToString(nonce),
+		"generation":  gen,
+		"claim_nonce": hex.EncodeToString(nonce),
 	})
-	if err := j.commit(ctx, "resume", gen,
+	if err := j.commitResumeClaim(ctx, "resume", gen,
 		StateTransition{Expected: RunWaiting, Target: RunRunning},
-		[]Event{{Kind: EventRunResumed, Data: claim}}, nil); err != nil {
+		[]Event{{Kind: EventRunResumed, Data: claim}}, request.Resume.IdempotencyKey, normalizedAnswers); err != nil {
 		return RunResult{Status: RunFailed}, err
 	}
 	// Re-stage the committed checkpoint under the new generation's ID
@@ -443,7 +448,7 @@ func (p *Program) resume(ctx context.Context, request RunRequest, bindings Bindi
 	cpID := request.Ref.RunID + "/" + itoa(gen)
 	p.rt.Staging().Stage(cpID, env.Payload)
 	exec := executorAdapter(j, bindings.Nodes)
-	res, err := p.rt.Invoke(ctx, request.Input, exec,
+	res, err := p.rt.Invoke(ctx, input, exec,
 		einoruntime.RunOptions{
 			CheckPointID: cpID,
 			Gate:         &j.suspending,
@@ -484,7 +489,7 @@ func (p *Program) resume(ctx context.Context, request RunRequest, bindings Bindi
 func resumeReplay(request RunRequest, st RecoveryState, store RunStore) (RunResult, error) {
 	if st.ResumeKey != "" &&
 		st.ResumeKey == request.Resume.IdempotencyKey &&
-		st.ResumeAnswersDigest == answersDigest(request.Resume.Answers) {
+		sameAnswers(st.ResumeAnswers, request.Resume.Answers) {
 		return RunResult{Status: st.Status}, nil
 	}
 	return RunResult{Status: st.Status}, &Error{
@@ -501,35 +506,55 @@ func verifyEnvelope(env *CheckpointEnvelope, st RecoveryState, meta ProgramMeta)
 		return &Error{Code: ErrCheckpointIncompatible, Path: st.Ref.RunID, Message: msg}
 	}
 	switch {
-	case env.ProgramDigest != meta.ProgramDigest:
-		return bad("checkpoint program digest mismatch")
-	case env.DefinitionDigest != meta.DefinitionDigest:
-		return bad("checkpoint definition digest mismatch")
+	case env.RunID != st.Ref.RunID:
+		return bad("checkpoint run identity mismatch")
+	case env.ProgramID != meta.ProgramID || env.ProgramID != st.Ref.ProgramID:
+		return bad("checkpoint program identity mismatch")
+	case env.HostBindingID != st.Ref.HostBindingID:
+		return bad("checkpoint host binding mismatch")
 	case env.EinoBuild != meta.EinoBuild:
 		return bad("checkpoint eino build mismatch")
 	case env.SerializerVersion != serializerVersion:
 		return bad("checkpoint serializer version mismatch")
-	case env.InputDigest != st.InputDigest:
-		return bad("checkpoint input digest mismatch")
-	case payloadChecksum(env.Payload) != env.Checksum:
-		return bad("checkpoint payload checksum mismatch")
 	}
 	return nil
 }
 
-// answersDigest binds the whole answer map into one canonical digest
-// so a conflicting replay cannot reuse a prior claim's identity.
-func answersDigest(answers map[string]json.RawMessage) string {
-	doc := map[string]any{}
-	for k, v := range answers {
-		var d any
-		if err := json.Unmarshal(v, &d); err == nil {
-			doc[k] = d
+func normalizeAnswers(answers map[string]json.RawMessage) (map[string]json.RawMessage, error) {
+	out := make(map[string]json.RawMessage, len(answers))
+	for key, raw := range answers {
+		norm, err := NormalizeJSONValue(raw)
+		if err != nil {
+			return nil, err
+		}
+		out[key] = norm
+	}
+	return out, nil
+}
+
+func sameJSON(a, b json.RawMessage) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return len(a) == len(b)
+	}
+	na, errA := NormalizeJSONValue(a)
+	nb, errB := NormalizeJSONValue(b)
+	return errA == nil && errB == nil && bytes.Equal(na, nb)
+}
+
+func sameAnswers(a, b map[string]json.RawMessage) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for key, value := range a {
+		other, ok := b[key]
+		if !ok || !sameJSON(value, other) {
+			return false
 		}
 	}
-	norm, err := definition.Canonical(doc)
-	if err != nil {
-		return ""
-	}
-	return definition.DigestBytes(norm)
+	return true
+}
+
+func isNotFound(err error) bool {
+	var ie *Error
+	return errors.As(err, &ie) && ie.Code == ErrRevisionConflict && ie.Message == "unknown run"
 }

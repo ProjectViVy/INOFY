@@ -2,6 +2,12 @@
 
 Date: 2026-09-29. State: S01–S10 have recorded implementation evidence; S11–S13 remain pending their own gates. The [architecture](../../specs/2026-09-28-inofy-architecture.md) defines INOFY G1–G11. The VIVY [S11 detailed architecture](https://github.com/ProjectViVy/agent-vivy/blob/docs/issue23-inofy-cutover-plan/docs/superpowers/specs/2026-09-29-inofy-cutover-design.md) and [work package index](https://github.com/ProjectViVy/agent-vivy/blob/docs/issue23-inofy-cutover-plan/docs/superpowers/plans/2026-09-29-inofy-cutover/README.md) supersede earlier host descriptor-translation assumptions. This plan branch changes documentation only; no S11 integration evidence exists.
 
+**D11 contract update (2026-10-21):** S01–S10 and S13 entries below are
+historical implementation plans. Their digest/checksum language is superseded
+by architecture §4.3 and the [D11 delivery log](../../logs/2026-10-21-hash-free-values/summary.md).
+Do not restore those fingerprint APIs or use them as identity/replay authority.
+The Vivy dependency pin and integration remain a separate delivery.
+
 ## Delivery boundaries
 
 | Epic | Verifiable outcome | Stories | Requirements / gates |
@@ -15,7 +21,7 @@ Date: 2026-09-29. State: S01–S10 have recorded implementation evidence; S11–
 ## Contracts to hold across Stories
 
 1. Proposed module: `github.com/ProjectViVy/inofy`; separate App module `github.com/ProjectViVy/inofy/apps/inofy` with local `replace` during development. Verify final ownership/remote namespace before a module release; no plan step publishes automatically. Public Go signatures and ownership are those in architecture §6. S01 creates the canonical type declarations; later Stories refer to them rather than creating competing definitions.
-2. `Definition` is the sole executable schema; `Artifact` adds presentation. S02 owns strict decoding, normalization, portable JSON Schema and digest fixtures. S11-A exports a canonical schema accessor for VIVY without copying the grammar. Browser consumers use server digests.
+2. `Definition` is the sole executable schema; `Artifact` adds presentation. S02 owns strict decoding, canonical value normalization and portable JSON Schema. S11-A exports a canonical schema accessor for VIVY without copying the grammar. Browser consumers use the backend's canonical values and owner identities.
 3. S03 alone owns Eino DAG/branch/select translation; S04 adds repeat to the same compiler; S05 owns per-run wrappers and durable `RunStore` protocol; S06 owns checkpoint/wait/resume. No Story adds a competing scheduler.
 4. `RunStore.Commit(ctx, ref, change)` is the one host-controlled atomic visibility boundary. S08 implements its SQLite adapter; S11-C maps to VIVY's Core Storage transaction and Journal/blob lifecycle in both SQLite and PostgreSQL. S12 uses explicit ephemeral RunStore for synchronous read-only recall and Garden's existing durable ingestion receipt for effects; it does not advertise Garden crash-resumable waits. A source-inspected adapter is not accepted until its fault tests pass.
 5. UI source of truth: S10 `studio/src/transport.ts`, with its S09 App adapter and a VIVY host bridge seam; S11-F/G supply and prove the actual VIVY actions and selected UI Module. S10 builds browser assets; S13 packages them into the Go App. No Node runtime dependency is shipped.

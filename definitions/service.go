@@ -35,32 +35,7 @@ func (s *Service) SaveDraft(ctx context.Context, workflowID, expectedETag string
 	} else if len(diags) > 0 {
 		return Draft{}, &inofy.Error{Code: inofy.ErrInvalidDefinition, Message: diags[0].Message}
 	}
-	defDigest, err := inofy.DefinitionDigest(a.Definition)
-	if err != nil {
-		return Draft{}, err
-	}
-	artDigest, err := inofy.ArtifactDigest(a)
-	if err != nil {
-		return Draft{}, err
-	}
-	d, err := s.repo.UpdateDraftCAS(ctx, workflowID, expectedETag, a)
-	if err != nil {
-		return Draft{}, err
-	}
-	d.DefinitionDigest = defDigest
-	d.ArtifactDigest = artDigest
-	// The durable draft must carry the digests the service computed;
-	// persist them through one more CAS hop only when the repository
-	// returned a draft that lacks them (host repositories store the
-	// whole Draft row and may ignore this re-save).
-	if dd, ok := s.repo.(interface {
-		SetDraftDigests(ctx context.Context, workflowID, etag, defDigest, artDigest string) error
-	}); ok {
-		if err := dd.SetDraftDigests(ctx, workflowID, d.ETag, defDigest, artDigest); err != nil {
-			return Draft{}, err
-		}
-	}
-	return d, nil
+	return s.repo.UpdateDraftCAS(ctx, workflowID, expectedETag, a)
 }
 
 // ValidateDraft compiles the current draft against the frozen

@@ -93,7 +93,7 @@ Proposed repository shape:
 | `go.mod`, root package `inofy` | Public data types, catalog, validation, compilation and invocation facade |
 | `definitions/` | Optional draft/publication service and repository contract, using core definition types |
 | `internal/einoruntime/` | All Eino imports and graph/checkpoint translation |
-| `internal/definition/` | Schema, normalization, structural validation and stable digests |
+| `internal/definition/` | Schema, canonical value normalization and structural validation |
 | `internal/execution/` | Per-run wrappers, data binding, event identities and bounds; no graph scheduler |
 | `studio/` | TypeScript editor package, transport contract and localization |
 | `apps/inofy/go.mod` | Separate App module, isolating SQLite/model-provider dependencies from library consumers |
@@ -151,17 +151,19 @@ Illustrative binding:
 
 The semantic schema is authoritative. Go decoding, API validation and editor-generated types must derive from or be checked against the same schema fixture; manual divergent schema copies are prohibited. Validation returns `{check, path, code, message}` where `check` is `schema`, `topology`, `capability`, `budget`, or `authority`. Only hosts can complete the authority check.
 
-### 4.3 Hashes and publication identity
+### 4.3 Canonical values and publication identity
 
-Use a named normalization algorithm `inofy-normal-v1`: reject duplicate JSON object keys and invalid numbers; decode accepted numbers to finite binary64, reject integral values outside the safe integer range, and normalize negative zero to zero. Re-encode the normalized JSON value with Go `encoding/json`, HTML escaping disabled, no indentation and no trailing newline. Object keys use that encoder's sorted order; node arrays are sorted by ID and edges by `(from, port, to)`. Preserve ordered switch cases and other order-sensitive arrays. Strings retain their Unicode code points without Unicode normalization. This is INOFY's named encoding, not a claim of RFC 8785 compliance. The implementation must include Go/browser round-trip fixtures for numeric precision, escaping, Unicode and empty/null distinctions. Browsers use the server-returned digest rather than an independent hash implementation.
+Use a named normalization algorithm `inofy-normal-v1`: reject duplicate JSON object keys and invalid numbers; decode accepted numbers to finite binary64, reject integral values outside the safe integer range, and normalize negative zero to zero. Re-encode the normalized JSON value with Go `encoding/json`, HTML escaping disabled, no indentation and no trailing newline. Object keys use that encoder's sorted order; node arrays are sorted by ID and edges by `(from, port, to)`. Preserve ordered switch cases and other order-sensitive arrays. Strings retain their Unicode code points without Unicode normalization. This is INOFY's named value encoding, not a claim of RFC 8785 compliance. Go/browser fixtures pin the canonical bytes for numeric precision, escaping, Unicode and empty/null distinctions. The normalized value is data; it is never wrapped in a fingerprint or treated as identity.
 
-`DefinitionDigest` is SHA-256 over normalized semantic definition bytes. `ArtifactDigest` additionally covers its presentation metadata. Layout edits leave `DefinitionDigest` unchanged. `CatalogDigest` covers only used node descriptors and trusted implementation identities, not unrelated installed nodes. `ProgramDigest` binds DefinitionDigest, CatalogDigest, INOFY compiler/format version and the exact Eino build identity. The run additionally records input digest, host binding identity, and admission limits.
+The immutable definition owner allocates `ProgramID` from its existing revision key. Published workflows use `(workflow_id, revision)`; a draft snapshot uses `(workflow_id, draft ETag)`. INOFY records that opaque owner identity with the compiler version and exact Eino build. It does not derive identity from content. Publication compares canonical artifact values and the exact used `type → implementation` map inside the existing revision owner. Run admission stores the canonical source and input values; resume receipts store the exact answer values. Checkpoints bind RunID, ProgramID, HostBindingID, Eino build, serializer version, usage and event boundary directly. Commit replay compares canonical request bytes. No content fingerprint, checksum, or digest alias is an identity or replay authority.
+
+The App migration removes the former digest columns and uniqueness constraint. Historical run-commit rows keep their sequence receipts but have no reconstructible body, so a same-ID redelivery returns `outcome_unknown`. Historical waiting checkpoints used digest-only identity and become `recovery_required`; they are not resumed by translating the old fingerprints.
 
 `schema_version` is the file-format version; `revision` is the immutable published workflow revision; node type major versions govern node contracts. These are distinct. A published revision never silently resolves to a different node implementation: changed implementation identity requires republishing or an explicit reviewed compatibility decision. `latest` is resolved once at admission and stored as the resulting exact revision.
 
 ### 4.4 Draft/publication service
 
-The optional `definitions.Service` provides `SaveDraft(expectedETag)`, `ValidateDraft`, `Publish(expectedETag, catalog)`, `GetRevision` and bounded listing. Its repository adapter must atomically implement CAS draft updates and publication. One mutable draft exists per workflow ID; publication allocates an increasing integer revision and freezes the artifact, semantic digest and used catalog identity. Repeated publication of the same artifact is idempotent and returns the existing revision. Concurrent editors receive a conflict, not a last-writer overwrite.
+The optional `definitions.Service` provides `SaveDraft(expectedETag)`, `ValidateDraft`, `Publish(expectedETag, catalog)`, `GetRevision` and bounded listing. Its repository adapter must atomically implement CAS draft updates and publication. One mutable draft exists per workflow ID; publication allocates an increasing integer revision and freezes the artifact value and used implementation map. Repeated publication of the same canonical artifact and implementation values is idempotent and returns the existing revision. Concurrent editors receive a conflict, not a last-writer overwrite.
 
 The library may run an explicitly supplied definition without this service. ViVy/Garden may keep their own product definition storage while using INOFY validation; migration must identify exactly one authority for each definition. Archiving prevents new admissions; it does not remove revisions referenced by runs or checkpoints.
 
@@ -234,14 +236,14 @@ type RunStore interface {
 | Type | Required contents and meaning |
 |---|---|
 | `CompileOptions` | Host-supported features and maximum admissible graph limits; no authority grant |
-| `ExecutionRef` | Host-assigned RunID, exclusive writer Epoch, ProgramDigest and opaque HostBindingID |
+| `ExecutionRef` | Host-assigned RunID, exclusive writer Epoch, owner-allocated ProgramID and opaque HostBindingID |
 | `RunRequest` | ExecutionRef, input JSON, effective Limits, and optional ResumeRequest; admission identity must match stored state |
 | `NodeCall` | ExecutionRef, logical node path, TypeID, ImplementationID, config, input, stable OperationKey, attempt number and optional continuation data |
 | `NodeReply` | Exactly one of completed output or WaitRequest; completed output must satisfy the descriptor schema |
 | `WaitRequest` | Host-generated request ID, kind, redacted prompt, answer schema and opaque continuation reference |
 | `RunCommit` | Stable CommitID, semantic events, optional protected result updates, optional checkpoint envelope, and expected run-state transition |
 | `Receipt` | Durable sequence range and committed projection revision; assigned by the host |
-| `RecoveryState` | Admitted identities/input digest/limits, current status, durable usage, latest committed checkpoint and unresolved operation references |
+| `RecoveryState` | Admitted identities and exact input/answer values, limits, current status, durable usage, latest committed checkpoint and unresolved operation references |
 | `RunResult` | Succeeded/waiting/failed/cancelled/recovery_required, bounded outputs, warnings and terminal diagnostics |
 
 `Compile` performs structural validation and compilation without I/O effects. The host then authorizes the normalized definition against the caller and freezes admission. `Run` rejects mismatched program identity or wider limits. Credential resolution and current revocation checks happen again inside `NodeExecutor.Execute` before each effect.
@@ -358,7 +360,7 @@ Protected outputs and checkpoint bytes are stored separately from the redacted e
 4. After Eino returns a resumable interruption and is quiescent, one `RunStore.Commit` persists the opaque checkpoint envelope, outstanding waits, usage, node projections and `run.waiting` atomically. If this fails, the run is not reported as durably suspended.
 5. No effect is allowed after this commit until the host admits a resume. If the process dies before commit, the stored running status requires reconciliation rather than an invented checkpoint.
 
-The envelope binds RunID, continuation generation, DefinitionDigest, ProgramDigest, exact Eino build identity, serializer version, host binding/generation identity, input digest, usage, checkpoint checksum and the durable event boundary. The Eino payload is opaque. INOFY must not promise to reconstruct it from UI events or port it between Eino releases.
+The envelope binds RunID, continuation generation, ProgramID, exact Eino build identity, serializer version, HostBindingID, usage and durable event boundary. The Eino payload is opaque. INOFY must not promise to reconstruct it from UI events or port it between Eino releases.
 
 ### 8.4 Resume protocol
 
@@ -382,7 +384,7 @@ Reconciliation examines all started operations after the saved boundary against 
 | Checkpoint is staged, process dies before atomic suspension | Stored run remains running; reconcile. |
 | Checkpoint committed, process restarts | Waiting state may resume after identity/permission checks. |
 | Timeout after remote effect may have happened | Unknown outcome; never blindly retry. |
-| Checkpoint version, digest or authority identity differs | Refuse resume with an explicit incompatibility error. |
+| Checkpoint version, ProgramID or authority identity differs | Refuse resume with an explicit incompatibility error. |
 | SSE subscriber disconnects | The run continues; subscriber reconnects from committed sequence. |
 
 ### 8.6 Error contract
@@ -447,7 +449,7 @@ Golden fixtures compare domain outputs, warnings and budget consumption; nondete
 
 `inofy serve` opens explicitly configured state and connection paths, obtains exclusive ownership of its state directory, initializes the App's migrations, builds a frozen catalog, loads definition metadata and starts a Go HTTP server serving the embedded editor. Default binding is loopback. `inofy validate`, `inofy run` and `inofy inspect` use the same validation/execution packages; a CLI opening the state directory must respect the same single-process ownership lock. Offline validation does not require that directory.
 
-The App is a single process with bounded concurrent runs. Admission persists the immutable source snapshot, input digest, trusted binding and root idempotency key before execution. A bounded in-memory dispatch channel is a wake-up mechanism for persisted admitted runs, not another authority or distributed scheduler. The App does not schedule DAG nodes itself. Admission backlog exhaustion returns a clear busy response rather than accepting work it cannot track.
+The App is a single process with bounded concurrent runs. Admission persists the immutable source snapshot, exact input value, owner-allocated program identity, trusted binding and root idempotency key before execution. A bounded in-memory dispatch channel is a wake-up mechanism for persisted admitted runs, not another authority or distributed scheduler. The App does not schedule DAG nodes itself. Admission backlog exhaustion returns a clear busy response rather than accepting work it cannot track.
 
 Startup dispatches admitted-but-never-started runs; previous running runs become recovery_required. Waiting and terminal runs stay quiescent. Shutdown stops admissions, requests cancellation of active calls, drains within a configured grace period and preserves unresolved records for recovery. It does not label an unconfirmed effect cancelled solely because the process is exiting.
 
@@ -458,11 +460,11 @@ SQLite via a pure-Go driver is the App default. Reuse the driver's proven host u
 | Table | Key data/invariant |
 |---|---|
 | `workflows` | ID, metadata, draft artifact, draft ETag, next publication revision, archived state |
-| `workflow_revisions` | Immutable `(workflow_id, revision)` artifact/digests/used catalog; unique artifact publication identity |
+| `workflow_revisions` | Immutable `(workflow_id, revision)` artifact and exact used implementation values |
 | `runs` | Immutable source snapshot/inputs/admission, status, writer epoch, continuation generation, remaining budgets, waits and current checkpoint envelope/payload |
-| `run_commits` | Unique `(run_id, commit_id)`, semantic body digest and assigned sequence range |
+| `run_commits` | Unique `(run_id, commit_id)`, canonical request body bytes and assigned sequence range |
 | `run_events` | Ordered `(run_id, seq)` redacted evidence; references to protected results |
-| `node_executions` | `(run_id, node_path, attempt)` projection, operation key, input/output digests, protected output and effect-receipt metadata |
+| `node_executions` | `(run_id, node_path, attempt)` projection, operation key, protected output and effect-receipt metadata |
 
 One transaction for `RunStore.Commit` updates its commit identity, events, node/run projection and checkpoint when supplied. Node-execution rows also provide the App executor's effect-outcome ledger, rather than a duplicate ledger table. All referenced revisions/checkpoints/outputs are retained while a run can be inspected or resumed. Retention is explicit and must preserve referential integrity; archiving a workflow cannot cascade-delete live evidence.
 
@@ -514,7 +516,7 @@ The embedding boundary is a `StudioTransport` interface providing catalog/capabi
 | Node properties | Type/version, schema-driven config, input bindings, timeout and supported failure policy; unsupported options are not shown as available |
 | Run view | Read-only exact execution graph, selected edges, node/iteration status, result inspector, warnings and event timeline |
 | Wait panel | Redacted prompt, schema-valid answer fields, continuation identity, authorized submit/cancel |
-| History | Exact revision/digest, state and times; open the immutable run view |
+| History | Exact workflow revision, state and times; open the immutable run view |
 
 The editor distinguishes draft, published and run-snapshot views. Editing a published revision creates/updates the draft. Dirty-state indicators and optimistic conflicts are visible; a failed save does not clear dirty state. Keyboard selection/deletion, undo/redo of local edits, accessible property forms, zoom/fit and en/zh labels are included in the first release. Undo does not undo server effects or publication.
 
@@ -524,7 +526,7 @@ A switch displays labelled case/default ports and an explicit select convergence
 
 1. **Author:** load actual catalog -> add/configure nodes -> bind inputs and edges -> save draft with ETag -> fix backend diagnostics.
 2. **Test:** choose workflow inputs -> snapshot exact draft -> admit normal governed run -> overlay committed statuses -> inspect outputs/errors.
-3. **Publish:** validate exact draft/catalog -> publish immutable revision -> receive revision/digest -> agents and external callers may discover/invoke through host-approved surfaces.
+3. **Publish:** validate exact draft/catalog -> publish immutable revision -> receive its owner-allocated ProgramID -> agents and external callers may discover/invoke through host-approved surfaces.
 4. **Wait/resume:** observe durable waiting -> answer outstanding prompts -> host checks identity/permission/continuation -> resume -> show continued execution.
 5. **Reopen:** reload a saved definition or run -> preserve every edge/port/binding and layout -> reconstruct statuses from the host projection and event cursor.
 
@@ -532,7 +534,7 @@ Workflow-as-tool is a host adapter over published input/output schemas and norma
 
 ## 13. Performance and cost decisions
 
-Compilation and schema validation occur when admitting a changed definition/catalog. Callers may explicitly retain immutable Programs for repeated runs. v0.1 does not need a global eviction/cache subsystem; the App may retain its currently loaded published programs by exact digest. No runtime graph mutation or deep copy of the entire run state per node is required.
+Compilation and schema validation occur when admitting a changed definition/catalog. Callers may explicitly retain immutable Programs for repeated runs. v0.1 does not need a global eviction/cache subsystem; the App may retain its currently loaded published programs by exact ProgramID. No runtime graph mutation or deep copy of the entire run state per node is required.
 
 Per-node values are immutable packets with explicit bindings; copy at trust/ownership boundaries rather than sharing mutable maps among concurrent nodes. Branch routing and dependency management stay inside Eino. The effect semaphore bounds expensive calls, while graph size bounds prevent unbounded pending graph tasks. Byte/output limits protect retained memory. Large binary objects remain host references; a generic artifact storage system is not added to the engine.
 
@@ -544,7 +546,7 @@ Durable execution deliberately pays for start/result records and suspension tran
 | RunStore atomic commit boundary | Waiting/checkpoint visibility and effect evidence cannot diverge silently | Separate fire-and-forget event callbacks cannot return durability failure. |
 | Explicit select and bounded repeat | Branch optionality and Garden's recurrence must be visible and verifiable | Arbitrary shared-state callbacks hide the graph contract. |
 | Reusable editor package | Independent App and ViVy are two actual UI consumers | Forked canvases would duplicate serialization and validation behavior. |
-| Immutable version/digest identity | Runs and checkpoints must bind what was actually approved/executed | Mutable names alone cannot safely resume or audit. |
+| Owner-allocated immutable program identity | Runs and checkpoints must bind the revision that was approved/executed | Mutable names alone cannot safely resume or audit. |
 
 ## 14. Delivery boundaries and acceptance ownership
 
@@ -568,7 +570,7 @@ Tests below are required acceptance work, not tests run during this architecture
 
 | Gate | Requirements | Required evidence |
 |---|---|---|
-| G1: Definition fidelity | R3–R5 | Strict decoding, duplicate-key rejection, schema diagnostics, semantic/layout digest separation, numeric cross-language fixtures, save/load round-trip of ports/edges/bindings |
+| G1: Definition fidelity | R3–R5 | Strict decoding, duplicate-key rejection, schema diagnostics, canonical value stability, numeric cross-language fixtures, save/load round-trip of ports/edges/bindings |
 | G2: Eino control flow | R2, R5, R6 | Exact v0.9.13 tests for parallel AND dependencies, switch fan-out, inactive branch omission, select convergence, root-data non-triggering mappings and all-exits settlement |
 | G3: Repeat composition | R2, R5–R7 | Serial loop-carried state, iteration cap/exhaustion, nested Workflow branching inside cyclic Graph, stable iteration paths, shared permits without deadlock |
 | G4: Suspension | R7 | Host wait -> Eino interrupt -> atomic checkpoint/events -> process reopen -> addressed resume; multi-wait barrier and repeated/denied answers |
@@ -648,4 +650,4 @@ The initial product direction and language/editor choices were approved in conve
 
 After written-spec review, the next Superpowers step is an implementation plan using the same requirement/gate IDs, followed by an explicitly chosen execution method. The implementation plan must translate the node/schema contracts into concrete files, specify precise host adapter/storage changes and supply runnable tests for the gates above. It must not label source-inspected behavior as already verified, silently expand the product, or create a parallel architecture document.
 
-Architecture self-review on 2026-09-28 checked scope against the approved conversation, dependency direction, branch convergence, permit ownership, pause fencing, cancellation-time persistence and crash classification. It clarified the tagged node fields, digest encoding and atomic-visibility boundary. Document checks parsed both JSON examples, verified all 14 pinned source links against local Git objects, checked all 17 sections and the 12 requirement / 11 gate identifiers, and found no unresolved placeholder markers. These checks validate the document, not INOFY runtime behavior; G1–G11 remain pending implementation evidence.
+Architecture self-review on 2026-09-28 checked scope against the approved conversation, dependency direction, branch convergence, permit ownership, pause fencing, cancellation-time persistence and crash classification. It clarified the tagged node fields, canonical encoding and atomic-visibility boundary. D11 later superseded the content-fingerprint identity and replay contract with owner IDs and direct values. Document checks parsed both JSON examples, verified all 14 pinned source links against local Git objects, checked all 17 sections and the 12 requirement / 11 gate identifiers, and found no unresolved placeholder markers. These checks validate the document, not INOFY runtime behavior; G1–G11 remain pending implementation evidence.

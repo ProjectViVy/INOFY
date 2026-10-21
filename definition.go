@@ -241,6 +241,19 @@ func toDiagnostics(fs []definition.Finding) []Diagnostic {
 	return out
 }
 
+func typeRefOf(d NodeDescriptor) definition.TypeRef {
+	return definition.TypeRef{
+		TypeID:           d.TypeID,
+		ImplementationID: d.ImplementationID,
+		ConfigSchema:     d.ConfigSchema,
+		InputSchema:      d.InputSchema,
+		OutputSchema:     d.OutputSchema,
+		Capabilities:     d.Capabilities,
+		Replay:           string(d.Replay),
+		SupportsWait:     d.SupportsWait,
+	}
+}
+
 // ValidateDefinition runs the semantic checks that need the frozen
 // catalog plus compile options: capability, budget and (with S02 T3)
 // topology admission. Authority stays host-owned and is never emitted.
@@ -277,7 +290,7 @@ func ValidateDefinition(def Definition, catalog Catalog, opts CompileOptions) []
 	return toDiagnostics(findings)
 }
 
-// Normalize encodes a definition in inofy-normal-v1 form (§4.3).
+// Normalize encodes a definition in the canonical v1 value representation.
 func Normalize(def Definition) ([]byte, error) {
 	doc, err := defToDoc(def)
 	if err != nil {
@@ -286,62 +299,28 @@ func Normalize(def Definition) ([]byte, error) {
 	return definition.NormalizeDefinitionDoc(doc)
 }
 
-// DefinitionDigest hashes the semantic definition only; presentation
-// metadata is excluded, so layout edits do not move this digest.
-func DefinitionDigest(def Definition) (string, error) {
-	norm, err := Normalize(def)
-	if err != nil {
-		return "", err
-	}
-	return definition.DigestBytes(norm), nil
-}
-
-// ArtifactDigest covers the full envelope including presentation.
-func ArtifactDigest(a Artifact) (string, error) {
+// NormalizeArtifact encodes the exact artifact value with unordered
+// definition arrays in their canonical order.
+func NormalizeArtifact(a Artifact) ([]byte, error) {
 	raw, err := json.Marshal(a)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	var doc map[string]any
 	if err := newGenericDecoder(raw).Decode(&doc); err != nil {
-		return "", err
+		return nil, err
 	}
-	norm, err := definition.NormalizeArtifactDoc(doc)
-	if err != nil {
-		return "", err
-	}
-	return definition.DigestBytes(norm), nil
+	return definition.NormalizeArtifactDoc(doc)
 }
 
-// CatalogDigest covers only the node descriptors this definition uses
-// plus their trusted implementation identities.
-func CatalogDigest(def Definition, catalog Catalog) (string, error) {
-	doc, err := defToDoc(def)
+// NormalizeJSONValue returns canonical bytes for an arbitrary JSON input.
+// The result is a direct value representation, not a content identifier.
+func NormalizeJSONValue(raw json.RawMessage) (json.RawMessage, error) {
+	norm, err := definition.NormalizeJSONValue(raw)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	types := make([]definition.TypeRef, 0, len(catalog.Types()))
-	for _, id := range catalog.Types() {
-		d, ok := catalog.Lookup(id)
-		if !ok {
-			continue
-		}
-		types = append(types, typeRefOf(d))
-	}
-	return definition.CatalogDigestDoc(doc, types)
-}
-
-func typeRefOf(d NodeDescriptor) definition.TypeRef {
-	return definition.TypeRef{
-		TypeID:           d.TypeID,
-		ImplementationID: d.ImplementationID,
-		ConfigSchema:     d.ConfigSchema,
-		InputSchema:      d.InputSchema,
-		OutputSchema:     d.OutputSchema,
-		Capabilities:     d.Capabilities,
-		Replay:           string(d.Replay),
-		SupportsWait:     d.SupportsWait,
-	}
+	return json.RawMessage(norm), nil
 }
 
 func newGenericDecoder(raw []byte) *json.Decoder {

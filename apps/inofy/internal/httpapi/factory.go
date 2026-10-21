@@ -15,7 +15,7 @@ import (
 // SQLite authority.
 func Factory(store *storage.Store, catalog inofy.Catalog, nodes inofy.NodeExecutor) dispatch.ProgramFactory {
 	return func(runID string) (*inofy.Program, inofy.Bindings, inofy.RunRequest, error) {
-		source, input, _, _, err := store.RunSource(context.Background(), runID)
+		source, input, programID, _, _, err := store.RunSource(context.Background(), runID)
 		if err != nil {
 			return nil, inofy.Bindings{}, inofy.RunRequest{}, err
 		}
@@ -23,13 +23,13 @@ func Factory(store *storage.Store, catalog inofy.Catalog, nodes inofy.NodeExecut
 		if err != nil {
 			return nil, inofy.Bindings{}, inofy.RunRequest{}, err
 		}
-		prog, diags, err := inofy.Compile(context.Background(), art.Definition, catalog, inofy.CompileOptions{})
+		prog, diags, err := inofy.Compile(context.Background(), art.Definition, catalog, inofy.CompileOptions{ProgramID: programID})
 		if err != nil {
 			return nil, inofy.Bindings{}, inofy.RunRequest{},
 				fmt.Errorf("compile admitted snapshot: %v (%d diagnostics)", err, len(diags))
 		}
 		req := inofy.RunRequest{
-			Ref:   inofy.ExecutionRef{RunID: runID, ProgramDigest: prog.Meta().ProgramDigest},
+			Ref:   inofy.ExecutionRef{RunID: runID, ProgramID: prog.Meta().ProgramID},
 			Input: input,
 		}
 		return prog, inofy.Bindings{Nodes: nodes, Runs: store}, req, nil

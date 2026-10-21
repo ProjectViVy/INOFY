@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -17,13 +18,13 @@ import (
 
 func (s *Store) GetDraft(ctx context.Context, workflowID string) (definitions.Draft, error) {
 	var (
-		artJSON, etag, defDig, artDig string
-		archived                      int
+		artJSON, etag string
+		archived      int
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT draft_artifact, draft_etag, definition_digest, artifact_digest, archived
+		`SELECT draft_artifact, draft_etag, archived
 		 FROM workflows WHERE workflow_id = ?`, workflowID).
-		Scan(&artJSON, &etag, &defDig, &artDig, &archived)
+		Scan(&artJSON, &etag, &archived)
 	if errors.Is(err, sql.ErrNoRows) {
 		return definitions.Draft{}, &inofy.Error{Code: inofy.ErrRevisionConflict, Path: workflowID,
 			Message: "workflow not found"}
@@ -36,25 +37,15 @@ func (s *Store) GetDraft(ctx context.Context, workflowID string) (definitions.Dr
 		return definitions.Draft{}, err
 	}
 	return definitions.Draft{
-		WorkflowID:       workflowID,
-		ETag:             etag,
-		Artifact:         a,
-		DefinitionDigest: defDig,
-		ArtifactDigest:   artDig,
-		Archived:         archived == 1,
+		WorkflowID: workflowID,
+		ETag:       etag,
+		Artifact:   a,
+		Archived:   archived == 1,
 	}, nil
 }
 
 func (s *Store) UpdateDraftCAS(ctx context.Context, workflowID, expectedETag string, a inofy.Artifact) (definitions.Draft, error) {
-	artJSON, err := json.Marshal(a)
-	if err != nil {
-		return definitions.Draft{}, err
-	}
-	defDig, err := inofy.DefinitionDigest(a.Definition)
-	if err != nil {
-		return definitions.Draft{}, err
-	}
-	artDig, err := inofy.ArtifactDigest(a)
+	artJSON, err := inofy.NormalizeArtifact(a)
 	if err != nil {
 		return definitions.Draft{}, err
 	}
@@ -84,15 +75,15 @@ func (s *Store) UpdateDraftCAS(ctx context.Context, workflowID, expectedETag str
 	newTag := fmt.Sprintf("%x", nextETag())
 	if notFoundErr {
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO workflows (workflow_id, draft_artifact, draft_etag, definition_digest, artifact_digest)
-			 VALUES (?, ?, ?, ?, ?)`, workflowID, artJSON, newTag, defDig, artDig); err != nil {
+			`INSERT INTO workflows (workflow_id, draft_artifact, draft_etag)
+			 VALUES (?, ?, ?)`, workflowID, artJSON, newTag); err != nil {
 			return definitions.Draft{}, err
 		}
 	} else {
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE workflows SET draft_artifact = ?, draft_etag = ?, definition_digest = ?, artifact_digest = ?
+			`UPDATE workflows SET draft_artifact = ?, draft_etag = ?
 			 WHERE workflow_id = ? AND draft_etag = ?`,
-			artJSON, newTag, defDig, artDig, workflowID, expectedETag); err != nil {
+			artJSON, newTag, workflowID, expectedETag); err != nil {
 			return definitions.Draft{}, err
 		}
 	}
@@ -101,16 +92,11 @@ func (s *Store) UpdateDraftCAS(ctx context.Context, workflowID, expectedETag str
 	}
 	return definitions.Draft{
 		WorkflowID: workflowID, ETag: newTag, Artifact: a,
-		DefinitionDigest: defDig, ArtifactDigest: artDig,
 	}, nil
 }
 
-// SetDraftDigests is the optional hook Service.SaveDraft uses; the
-// SQLite path already persists digests inside UpdateDraftCAS.
-func (s *Store) SetDraftDigests(_ context.Context, _, _, _, _ string) error { return nil }
-
 func (s *Store) PublishCAS(ctx context.Context, workflowID, expectedETag string, rev definitions.Revision) (definitions.Revision, error) {
-	artJSON, err := json.Marshal(rev.Artifact)
+	artJSON, err := inofy.NormalizeArtifact(rev.Artifact)
 	if err != nil {
 		return definitions.Revision{}, err
 	}
@@ -143,29 +129,54 @@ func (s *Store) PublishCAS(ctx context.Context, workflowID, expectedETag string,
 		return definitions.Revision{}, &inofy.Error{Code: inofy.ErrRevisionConflict, Path: workflowID,
 			Message: "stale etag"}
 	}
-	// Same-artifact republication is idempotent under the same used
-	// catalog identity: the UNIQUE key makes the existing row the
-	// dedup point.
-	var existing definitions.Revision
-	var exArt, exImpl []byte
-	err = tx.QueryRowContext(ctx,
-		`SELECT revision, artifact, used_implementations FROM workflow_revisions
-		 WHERE workflow_id = ? AND artifact_digest = ? AND used_catalog_digest = ?`,
-		workflowID, rev.ArtifactDigest, rev.UsedCatalogDigest).
-		Scan(&existing.Revision, &exArt, &exImpl)
-	if err == nil {
-		json.Unmarshal(exArt, &existing.Artifact)
-		json.Unmarshal(exImpl, &existing.UsedImplementations)
-		existing.WorkflowID = workflowID
-		existing.DefinitionDigest = rev.DefinitionDigest
-		existing.ArtifactDigest = rev.ArtifactDigest
-		existing.UsedCatalogDigest = rev.UsedCatalogDigest
-		if err := tx.Commit(); err != nil {
+	// Exact artifact bytes and implementation values own republication
+	// identity. Scan this workflow's bounded history instead of storing a
+	// content fingerprint as authority.
+	rows, err := tx.QueryContext(ctx,
+		`SELECT revision, artifact, used_implementations FROM workflow_revisions WHERE workflow_id = ?`, workflowID)
+	if err != nil {
+		return definitions.Revision{}, err
+	}
+	for rows.Next() {
+		var existing definitions.Revision
+		var exArt, exImpl []byte
+		if err := rows.Scan(&existing.Revision, &exArt, &exImpl); err != nil {
+			rows.Close()
 			return definitions.Revision{}, err
 		}
-		return existing, nil
+		var oldArtifact inofy.Artifact
+		var oldImpl map[string]string
+		if err := json.Unmarshal(exArt, &oldArtifact); err != nil {
+			rows.Close()
+			return definitions.Revision{}, err
+		}
+		if err := json.Unmarshal(exImpl, &oldImpl); err != nil {
+			rows.Close()
+			return definitions.Revision{}, err
+		}
+		oldCanonical, err := inofy.NormalizeArtifact(oldArtifact)
+		if err != nil {
+			rows.Close()
+			return definitions.Revision{}, err
+		}
+		oldImplJSON, _ := json.Marshal(oldImpl)
+		if bytes.Equal(oldCanonical, artJSON) && bytes.Equal(oldImplJSON, implJSON) {
+			existing.WorkflowID = workflowID
+			existing.ProgramID = definitions.ProgramID(workflowID, existing.Revision)
+			existing.Artifact = oldArtifact
+			existing.UsedImplementations = oldImpl
+			rows.Close()
+			if err := tx.Commit(); err != nil {
+				return definitions.Revision{}, err
+			}
+			return existing, nil
+		}
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return definitions.Revision{}, err
+	}
+	if err := rows.Close(); err != nil {
 		return definitions.Revision{}, err
 	}
 	var n int64
@@ -175,11 +186,12 @@ func (s *Store) PublishCAS(ctx context.Context, workflowID, expectedETag string,
 		return definitions.Revision{}, err
 	}
 	rev.Revision = uint64(n)
+	rev.ProgramID = definitions.ProgramID(workflowID, rev.Revision)
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO workflow_revisions
-		 (workflow_id, revision, artifact, definition_digest, artifact_digest, used_catalog_digest, used_implementations)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		workflowID, n, artJSON, rev.DefinitionDigest, rev.ArtifactDigest, rev.UsedCatalogDigest, implJSON); err != nil {
+		 (workflow_id, revision, artifact, used_implementations)
+		 VALUES (?, ?, ?, ?)`,
+		workflowID, n, artJSON, implJSON); err != nil {
 		return definitions.Revision{}, err
 	}
 	if _, err := tx.ExecContext(ctx,
@@ -194,13 +206,12 @@ func (s *Store) PublishCAS(ctx context.Context, workflowID, expectedETag string,
 
 func (s *Store) GetRevision(ctx context.Context, workflowID string, revision uint64) (definitions.Revision, error) {
 	var (
-		artJSON, implJSON            []byte
-		defDig, artDig, usedDig      string
+		artJSON, implJSON []byte
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT artifact, definition_digest, artifact_digest, used_catalog_digest, used_implementations
+		`SELECT artifact, used_implementations
 		 FROM workflow_revisions WHERE workflow_id = ? AND revision = ?`,
-		workflowID, revision).Scan(&artJSON, &defDig, &artDig, &usedDig, &implJSON)
+		workflowID, revision).Scan(&artJSON, &implJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return definitions.Revision{}, &inofy.Error{Code: inofy.ErrRevisionConflict, Path: workflowID,
 			Message: "revision not found"}
@@ -211,9 +222,7 @@ func (s *Store) GetRevision(ctx context.Context, workflowID string, revision uin
 	var rev definitions.Revision
 	rev.WorkflowID = workflowID
 	rev.Revision = revision
-	rev.DefinitionDigest = defDig
-	rev.ArtifactDigest = artDig
-	rev.UsedCatalogDigest = usedDig
+	rev.ProgramID = definitions.ProgramID(workflowID, revision)
 	if err := json.Unmarshal(artJSON, &rev.Artifact); err != nil {
 		return definitions.Revision{}, err
 	}

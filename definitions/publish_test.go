@@ -63,8 +63,8 @@ func TestPublishIdentity(t *testing.T) {
 		if r2.Revision != 2 {
 			t.Fatalf("changed catalog did not allocate new revision: %d", r2.Revision)
 		}
-		if r1.UsedCatalogDigest == r2.UsedCatalogDigest {
-			t.Fatal("revisions share used-catalog digest across different impls")
+		if r1.UsedImplementations["inofy.value@1"] == r2.UsedImplementations["inofy.value@1"] {
+			t.Fatal("revision lost its exact implementation value")
 		}
 	})
 

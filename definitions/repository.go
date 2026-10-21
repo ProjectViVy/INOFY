@@ -6,6 +6,7 @@
 package definitions
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"sync"
@@ -20,23 +21,19 @@ const ETagAbsent = "\x00absent"
 
 // Draft is the mutable editing surface for a workflow.
 type Draft struct {
-	WorkflowID       string         `json:"workflow_id"`
-	ETag             string         `json:"etag"`
-	Artifact         inofy.Artifact `json:"artifact"`
-	DefinitionDigest string         `json:"definition_digest"`
-	ArtifactDigest   string         `json:"artifact_digest"`
-	Archived         bool           `json:"archived"`
+	WorkflowID string         `json:"workflow_id"`
+	ETag       string         `json:"etag"`
+	Artifact   inofy.Artifact `json:"artifact"`
+	Archived   bool           `json:"archived"`
 }
 
 // Revision is an immutable published artifact bound to the exact
 // used catalog identity at publication time.
 type Revision struct {
-	WorkflowID         string            `json:"workflow_id"`
-	Revision           uint64            `json:"revision"`
-	Artifact           inofy.Artifact    `json:"artifact"`
-	DefinitionDigest   string            `json:"definition_digest"`
-	ArtifactDigest     string            `json:"artifact_digest"`
-	UsedCatalogDigest  string            `json:"used_catalog_digest"`
+	WorkflowID          string            `json:"workflow_id"`
+	Revision            uint64            `json:"revision"`
+	ProgramID           string            `json:"program_id"`
+	Artifact            inofy.Artifact    `json:"artifact"`
 	UsedImplementations map[string]string `json:"used_implementations"`
 }
 
@@ -58,8 +55,8 @@ type Repository interface {
 	// durable draft with a fresh ETag, or a revision_conflict error.
 	UpdateDraftCAS(ctx context.Context, workflowID, expectedETag string, a inofy.Artifact) (Draft, error)
 	// PublishCAS atomically validates expectedETag and allocates the
-	// next monotone revision, deduplicating by artifact digest under
-	// the same workflow: republishing the identical artifact returns
+	// next monotone revision, deduplicating by exact canonical artifact
+	// and used implementation values under the same workflow: republishing the identical artifact returns
 	// the existing revision without allocating a new one.
 	PublishCAS(ctx context.Context, workflowID, expectedETag string, rev Revision) (Revision, error)
 	// GetRevision reads an immutable published revision.
@@ -72,11 +69,11 @@ type Repository interface {
 // MemoryRepository is an in-memory reference implementation for tests
 // and ephemeral hosts — NOT a production authority (S07 plan).
 type MemoryRepository struct {
-	mu      sync.Mutex
-	drafts  map[string]*memDraft
+	mu        sync.Mutex
+	drafts    map[string]*memDraft
 	revisions map[string]map[uint64]Revision
-	order   []Revision // (workflow,revision) insertion order
-	nextETag uint64
+	order     []Revision // (workflow,revision) insertion order
+	nextETag  uint64
 }
 
 type memDraft struct {
@@ -115,8 +112,7 @@ func (m *MemoryRepository) UpdateDraftCAS(_ context.Context, workflowID, expecte
 	}
 	m.nextETag++
 	etag := etagOf(workflowID, m.nextETag)
-	// Caller recomputes digests; the repository stores what the
-	// service already validated and digested.
+	// The repository stores the validated artifact value directly.
 	nd := Draft{WorkflowID: workflowID, ETag: etag, Artifact: a}
 	m.drafts[workflowID] = &memDraft{Draft: nd}
 	return nd, nil
@@ -139,8 +135,7 @@ func (m *MemoryRepository) PublishCAS(_ context.Context, workflowID, expectedETa
 	// Same-artifact republication is idempotent: return the existing
 	// revision instead of allocating.
 	for _, r := range revs {
-		if r.ArtifactDigest == rev.ArtifactDigest &&
-			r.UsedCatalogDigest == rev.UsedCatalogDigest {
+		if sameRevisionInput(r, rev) {
 			return r, nil
 		}
 	}
@@ -152,6 +147,7 @@ func (m *MemoryRepository) PublishCAS(_ context.Context, workflowID, expectedETa
 	}
 	n++
 	rev.Revision = n
+	rev.ProgramID = ProgramID(workflowID, n)
 	if revs == nil {
 		revs = map[uint64]Revision{}
 		m.revisions[workflowID] = revs
@@ -159,6 +155,30 @@ func (m *MemoryRepository) PublishCAS(_ context.Context, workflowID, expectedETa
 	revs[n] = rev
 	m.order = append(m.order, rev)
 	return rev, nil
+}
+
+// ProgramID returns the immutable, owner-allocated workflow revision
+// identity. It contains only the existing owner keys.
+func ProgramID(workflowID string, revision uint64) string {
+	return workflowID + "/" + itoa(revision)
+}
+
+// DraftProgramID returns the immutable identity of one owner-versioned
+// draft snapshot. The ETag is allocated by the draft owner, not derived
+// from the artifact contents.
+func DraftProgramID(workflowID, etag string) string {
+	return workflowID + "/draft/" + etag
+}
+
+func sameRevisionInput(a, b Revision) bool {
+	ab, errA := inofy.NormalizeArtifact(a.Artifact)
+	bb, errB := inofy.NormalizeArtifact(b.Artifact)
+	if errA != nil || errB != nil || !bytes.Equal(ab, bb) {
+		return false
+	}
+	ai, errA := json.Marshal(a.UsedImplementations)
+	bi, errB := json.Marshal(b.UsedImplementations)
+	return errA == nil && errB == nil && bytes.Equal(ai, bi)
 }
 
 // Archive marks a workflow draft archived: no new publish, but
