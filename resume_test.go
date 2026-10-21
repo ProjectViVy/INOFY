@@ -19,6 +19,19 @@ type resumeExec struct {
 	continued *atomic.Int64
 }
 
+type checkpointOverlayStore struct {
+	inofy.RunStore
+	alter func(*inofy.CheckpointEnvelope)
+}
+
+func (s checkpointOverlayStore) Load(ctx context.Context, runID string) (inofy.RecoveryState, error) {
+	state, err := s.RunStore.Load(ctx, runID)
+	if err == nil && state.LatestCheckpoint != nil {
+		s.alter(state.LatestCheckpoint)
+	}
+	return state, err
+}
+
 func (e *resumeExec) Execute(ctx context.Context, c inofy.NodeCall) (inofy.NodeReply, error) {
 	if len(c.Continuation) > 0 {
 		e.continued.Add(1)
@@ -81,6 +94,52 @@ func TestResumeAndCrashMatrix(t *testing.T) {
 		}
 		if exec.continued.Load() != 1 {
 			t.Fatalf("executor continuation calls=%d", exec.continued.Load())
+		}
+	})
+
+	t.Run("compiler version change rejects checkpoint", func(t *testing.T) {
+		prog, store, exec := newProg()
+		res0 := admit(prog, store, exec, "compiler-version")
+		overlay := checkpointOverlayStore{RunStore: store, alter: func(env *inofy.CheckpointEnvelope) {
+			env.CompilerVersion = "inofy/v-next"
+		}}
+		_, err := prog.Run(ctx, inofy.RunRequest{
+			Ref: inofy.ExecutionRef{RunID: "compiler-version", ProgramID: prog.Meta().ProgramID},
+			Resume: &inofy.ResumeRequest{
+				Answers: map[string]json.RawMessage{res0.Waits[0].RequestID: json.RawMessage(`{"ok":true}`)},
+			},
+		}, inofy.Bindings{Nodes: exec, Runs: overlay})
+		var ie *inofy.Error
+		if !errors.As(err, &ie) || ie.Code != inofy.ErrCheckpointIncompatible {
+			t.Fatalf("compiler drift was accepted: %v", err)
+		}
+		state, loadErr := store.Load(ctx, "compiler-version")
+		if loadErr != nil || state.Status != inofy.RunWaiting || exec.continued.Load() != 0 {
+			t.Fatalf("compiler drift changed the waiting run: state=%#v err=%v continued=%d", state, loadErr, exec.continued.Load())
+		}
+	})
+
+	t.Run("catalog implementation change rejects checkpoint", func(t *testing.T) {
+		prog, store, exec := newProg()
+		res0 := admit(prog, store, exec, "catalog-drift")
+		changed, diags, err := inofy.Compile(ctx, resumeDef(), suspendCatalogWithImplementation("impl-w-v2"),
+			inofy.CompileOptions{ProgramID: prog.Meta().ProgramID})
+		if err != nil || len(diags) != 0 {
+			t.Fatalf("compile changed catalog: %v %#v", err, diags)
+		}
+		_, err = changed.Run(ctx, inofy.RunRequest{
+			Ref: inofy.ExecutionRef{RunID: "catalog-drift", ProgramID: changed.Meta().ProgramID},
+			Resume: &inofy.ResumeRequest{
+				Answers: map[string]json.RawMessage{res0.Waits[0].RequestID: json.RawMessage(`{"ok":true}`)},
+			},
+		}, inofy.Bindings{Nodes: exec, Runs: store})
+		var ie *inofy.Error
+		if !errors.As(err, &ie) || ie.Code != inofy.ErrCheckpointIncompatible {
+			t.Fatalf("catalog drift was accepted: %v", err)
+		}
+		state, loadErr := store.Load(ctx, "catalog-drift")
+		if loadErr != nil || state.Status != inofy.RunWaiting || exec.continued.Load() != 0 {
+			t.Fatalf("catalog drift changed the waiting run: state=%#v err=%v continued=%d", state, loadErr, exec.continued.Load())
 		}
 	})
 

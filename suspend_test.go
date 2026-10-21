@@ -93,8 +93,12 @@ func suspendDef() inofy.Definition {
 }
 
 func suspendCatalog() inofy.Catalog {
+	return suspendCatalogWithImplementation("impl-w")
+}
+
+func suspendCatalogWithImplementation(implementationID string) inofy.Catalog {
 	c, _ := inofy.NewCatalog([]inofy.NodeDescriptor{
-		{TypeID: "inofy.waiter@1", ImplementationID: "impl-w",
+		{TypeID: "inofy.waiter@1", ImplementationID: implementationID,
 			SupportsWait: true, OutputSchema: json.RawMessage(`{"type":"object"}`)},
 		{TypeID: "inofy.value@1", ImplementationID: "impl-1",
 			OutputSchema: json.RawMessage(`{"type":"object"}`)},

@@ -41,14 +41,16 @@ Use owner-allocated immutable `ProgramID` plus direct canonical values at existi
   unreplayable.
 - Task 4: complete. Updated the active INOFY contract and Studio API projection;
   retained historical migrations as immutable transition records.
-- Task 5: implementation review found and fixed four boundary defects: legacy
+- Task 5: implementation review found and fixed boundary defects: legacy
   draft ProgramID backfill, canonical commit replay parity, identity checks
-  before terminal resume replay, and strict SQLite host-binding equality.
+  before terminal resume replay, strict SQLite host-binding equality, nullable
+  legacy revision normalization, and direct compiler/catalog checkpoint
+  compatibility values.
 
 ## Verification
 
 - Root module `go test ./...`: passed.
-- App module affected packages `go test ./internal/auth ./internal/dispatch ./internal/httpapi ./internal/nodes ./internal/storage`: passed, including fresh install and legacy migration tests.
+- App module `go test ./internal/storage`: passed, including fresh install, legacy migration and NULL-revision draft recovery tests.
 - App module `go test ./... -skip '^TestStorePersistReopen$'`: passed all packages other than the platform-incompatible Windows permission assertion below.
 - App module `go test ./...`: all packages except the unchanged `internal/conns` test pass. `TestStorePersistReopen` fails on Windows because `secrets.json` reports mode `666`; the WSL check is denied in this environment, so Linux execution remains for upstream CI.
 - Studio `pnpm test`: passed, 44 tests across 6 files.

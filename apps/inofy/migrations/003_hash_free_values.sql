@@ -20,6 +20,9 @@ ALTER TABLE workflow_revisions_new RENAME TO workflow_revisions;
 ALTER TABLE runs ADD COLUMN program_id TEXT;
 ALTER TABLE runs ADD COLUMN host_binding_id TEXT;
 ALTER TABLE runs ADD COLUMN resume_answers_json BLOB;
+-- Some legacy workflow-owned draft rows stored a NULL revision. The current
+-- dispatch path uses revision 0 for drafts and reads it as a non-null value.
+UPDATE runs SET revision = 0 WHERE workflow_id IS NOT NULL AND revision IS NULL;
 UPDATE runs SET program_id = workflow_id || '/' || revision
     WHERE program_id IS NULL AND workflow_id IS NOT NULL AND revision IS NOT NULL AND revision > 0;
 -- Draft admissions have revision 0 and no persisted draft ETag in the

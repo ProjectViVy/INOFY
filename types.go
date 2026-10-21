@@ -468,15 +468,17 @@ type Usage struct {
 // CheckpointEnvelope binds the opaque Eino payload to every identity
 // needed to gate a resume (architecture §8.3).
 type CheckpointEnvelope struct {
-	ContinuationGeneration int    `json:"continuation_generation"`
-	RunID                  string `json:"run_id"`
-	ProgramID              string `json:"program_id"`
-	HostBindingID          string `json:"host_binding_id,omitempty"`
-	EinoBuild              string `json:"eino_build"`
-	SerializerVersion      string `json:"serializer_version"`
-	Usage                  Usage  `json:"usage"`
-	EventBoundary          uint64 `json:"event_boundary"`
-	Payload                []byte `json:"payload"`
+	ContinuationGeneration int             `json:"continuation_generation"`
+	RunID                  string          `json:"run_id"`
+	ProgramID              string          `json:"program_id"`
+	HostBindingID          string          `json:"host_binding_id,omitempty"`
+	CompilerVersion        string          `json:"compiler_version"`
+	EinoBuild              string          `json:"eino_build"`
+	CatalogContract        json.RawMessage `json:"catalog_contract"`
+	SerializerVersion      string          `json:"serializer_version"`
+	Usage                  Usage           `json:"usage"`
+	EventBoundary          uint64          `json:"event_boundary"`
+	Payload                []byte          `json:"payload"`
 }
 
 // StateTransition is the CAS expectation in a commit: the commit is only

@@ -4,7 +4,10 @@ Replaced digest authority in the INOFY library and App with owner-allocated
 `ProgramID` values and exact canonical JSON values. Definition publication
 compares artifact and implementation values directly. Run admission, resume,
 checkpoints, and commit replay bind the exact admitted source/input/answers and
-the program/host identity. Existing Eino composition remains in place.
+the program/host identity. Checkpoints also retain the compiler version and
+direct values for used catalog descriptors, so an unchanged owner ProgramID
+cannot resume across compiler or execution-contract drift. Existing Eino
+composition remains in place.
 
 App migration `003_hash_free_values.sql` drops active fingerprint columns,
 backfills stable IDs for revision and draft runs, moves old waiting checkpoints

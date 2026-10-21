@@ -17,9 +17,10 @@ import (
 // invocations with different run IDs. It holds no run state, live
 // credentials, host globals or per-run closures.
 type Program struct {
-	meta          ProgramMeta
-	rt            *einoruntime.Program
-	compileLimits Limits
+	meta            ProgramMeta
+	rt              *einoruntime.Program
+	compileLimits   Limits
+	catalogContract json.RawMessage
 }
 
 // ProgramMeta reports the immutable identity allocated by the definition
@@ -222,7 +223,9 @@ func (p *Program) suspend(ctx context.Context, request RunRequest,
 		RunID:                  request.Ref.RunID,
 		ProgramID:              request.Ref.ProgramID,
 		HostBindingID:          request.Ref.HostBindingID,
+		CompilerVersion:        p.meta.CompilerVersion,
 		EinoBuild:              p.meta.EinoBuild,
+		CatalogContract:        bytes.Clone(p.catalogContract),
 		SerializerVersion:      serializerVersion,
 		Usage:                  j.usage(),
 		EventBoundary:          j.ord.Load(),
@@ -341,7 +344,7 @@ func (p *Program) resume(ctx context.Context, request RunRequest, bindings Bindi
 			Message: "waiting run has no committed checkpoint",
 		}
 	}
-	if err := verifyEnvelope(env, st, p.meta); err != nil {
+	if err := verifyEnvelope(env, st, p.meta, p.catalogContract); err != nil {
 		return RunResult{Status: RunFailed}, err
 	}
 	if len(request.Input) > 0 && !sameJSON(request.Input, st.AdmittedInput) {
@@ -501,7 +504,7 @@ func resumeReplay(request RunRequest, st RecoveryState, store RunStore) (RunResu
 
 // verifyEnvelope proves the committed checkpoint binds the run's
 // admitted identities before any resume (§8.4).
-func verifyEnvelope(env *CheckpointEnvelope, st RecoveryState, meta ProgramMeta) error {
+func verifyEnvelope(env *CheckpointEnvelope, st RecoveryState, meta ProgramMeta, catalogContract json.RawMessage) error {
 	bad := func(msg string) error {
 		return &Error{Code: ErrCheckpointIncompatible, Path: st.Ref.RunID, Message: msg}
 	}
@@ -512,8 +515,12 @@ func verifyEnvelope(env *CheckpointEnvelope, st RecoveryState, meta ProgramMeta)
 		return bad("checkpoint program identity mismatch")
 	case env.HostBindingID != st.Ref.HostBindingID:
 		return bad("checkpoint host binding mismatch")
+	case env.CompilerVersion != meta.CompilerVersion:
+		return bad("checkpoint compiler version mismatch")
 	case env.EinoBuild != meta.EinoBuild:
 		return bad("checkpoint eino build mismatch")
+	case !sameJSON(env.CatalogContract, catalogContract):
+		return bad("checkpoint catalog contract mismatch")
 	case env.SerializerVersion != serializerVersion:
 		return bad("checkpoint serializer version mismatch")
 	}

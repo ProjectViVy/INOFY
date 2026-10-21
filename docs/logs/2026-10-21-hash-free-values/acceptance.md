@@ -13,3 +13,6 @@
   dispatch after migration.
 - Existing waiting checkpoints move to `recovery_required`; their old commit
   receipts remain visible but return `outcome_unknown` on redelivery.
+- A checkpoint cannot resume under a different compiler version or changed
+  direct values for the catalog descriptors used to compile it, even when the
+  owner ProgramID remains the same.

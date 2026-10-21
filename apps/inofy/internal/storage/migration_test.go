@@ -71,6 +71,12 @@ func TestHashFreeMigrationPreservesValuesAndQuarantinesLegacyReceipts(t *testing
 		[]byte(`{"draft":true}`), []byte(`{"value":9}`)); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO runs(run_id, workflow_id, principal, revision, program_digest, status, source_json, input_json)
+			 VALUES('run-null-revision', 'wf', 'owner', NULL, 'old-draft-program', 'queued', ?, ?)`,
+		[]byte(`{"graph":{}}`), []byte(`{"value":5}`)); err != nil {
+		t.Fatal(err)
+	}
 
 	s, err := storage.Open(ctx, path)
 	if err != nil {
@@ -95,6 +101,15 @@ func TestHashFreeMigrationPreservesValuesAndQuarantinesLegacyReceipts(t *testing
 		programID != "wf/run/run-draft" || workflowID != "wf" || revision != 0 {
 		t.Fatalf("draft admission lost its restart identity or values: source=%s input=%s program=%s workflow=%s revision=%d",
 			source, input, programID, workflowID, revision)
+	}
+	nullRevisionSource, nullRevisionInput, nullRevisionProgram, nullRevisionWorkflow, nullRevision, err := s.RunSource(ctx, "run-null-revision")
+	if err != nil {
+		t.Fatalf("normalize legacy NULL revision for dispatch: %v", err)
+	}
+	if string(nullRevisionSource) != `{"graph":{}}` || string(nullRevisionInput) != `{"value":5}` ||
+		nullRevisionProgram != "wf/run/run-null-revision" || nullRevisionWorkflow != "wf" || nullRevision != 0 {
+		t.Fatalf("legacy NULL revision lost draft dispatch identity or values: source=%s input=%s program=%s workflow=%s revision=%d",
+			nullRevisionSource, nullRevisionInput, nullRevisionProgram, nullRevisionWorkflow, nullRevision)
 	}
 	incomplete, err := s.Load(ctx, "run-incomplete")
 	if err != nil {

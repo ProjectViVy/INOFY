@@ -2,10 +2,12 @@ package inofy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"runtime/debug"
 
+	"github.com/ProjectViVy/inofy/internal/definition"
 	"github.com/ProjectViVy/inofy/internal/einoruntime"
 )
 
@@ -52,8 +54,32 @@ func Compile(ctx context.Context, def Definition, catalog Catalog, options Compi
 	if err != nil {
 		return nil, nil, adaptError(err)
 	}
+	catalogContract, err := compileCatalogContract(doc, catalog)
+	if err != nil {
+		return nil, nil, &Error{Code: ErrInvalidDefinition, Err: err,
+			Message: "catalog contract cannot be encoded for checkpoint compatibility"}
+	}
 	meta := programMeta(options.ProgramID)
-	return &Program{meta: meta, rt: rt, compileLimits: lim}, nil, nil
+	return &Program{meta: meta, rt: rt, compileLimits: lim, catalogContract: catalogContract}, nil, nil
+}
+
+func compileCatalogContract(doc map[string]any, catalog Catalog) (json.RawMessage, error) {
+	types := make([]definition.TypeRef, 0, len(catalog.Types()))
+	for _, id := range catalog.Types() {
+		descriptor, ok := catalog.Lookup(id)
+		if ok {
+			types = append(types, typeRefOf(descriptor))
+		}
+	}
+	contract, err := definition.CatalogContractDoc(doc, types)
+	if err != nil {
+		return nil, err
+	}
+	canonical, err := definition.Canonical(contract)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(canonical), nil
 }
 
 // typeInfos projects the catalog's used descriptors into the runtime's
