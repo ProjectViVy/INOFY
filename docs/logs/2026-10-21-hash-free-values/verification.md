@@ -8,3 +8,4 @@
 - Studio `pnpm build`: passed; `TEMP` and `TMP` pointed to clone-local scratch after the default Windows temp location denied esbuild cleanup.
 - `git diff --check`: passed.
 - Checkpoint payload checksum removal is intentional under the complete hash-free contract; this envelope no longer provides application-level checkpoint corruption detection.
+- Eino capability check: this repository pins Eino v0.9.13. The existing `internal/einoruntime` uses `compose.WithCheckPointStore`, `compose.WithCheckPointID`, and `compose.BatchResumeWithData`; this change keeps those primitives and the Eino import boundary. The owner `ProgramID` and canonical definition/catalog values remain INOFY business identity in the existing RunStore envelope because Eino's opaque checkpoint payload/store key does not supply that owner contract.
