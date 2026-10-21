@@ -74,11 +74,6 @@ function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-function shortDigest(d: string | undefined): string {
-  if (!d) return "—";
-  return d.length > 16 ? `${d.slice(0, 16)}…` : d;
-}
-
 export function EditorPage({
   transport,
   workflowId,
@@ -99,7 +94,7 @@ export function EditorPage({
   const [diags, setDiags] = useState<Diag[] | null>(null);
   const [diagsAt, setDiagsAt] = useState<string | null>(null);
   const [diagOpen, setDiagOpen] = useState(true);
-  const [published, setPublished] = useState<PublishView | null>(null);
+  const [published, setPublished] = useState<Pick<PublishView, "workflow" | "revision"> | null>(null);
   const past = useRef<Artifact[]>([]);
   const future = useRef<Artifact[]>([]);
   // 撤销栈需要「上一个 artifact」，但不能写在 setState 更新函数里
@@ -143,7 +138,7 @@ export function EditorPage({
     void load();
   }, [load]);
 
-  // 最近一次发布的回执（修订号 + 定义摘要），只读展示。
+  // 最近一次发布的回执，只读展示。
   useEffect(() => {
     if (publishedRevision == null) {
       setPublished(null);
@@ -153,7 +148,7 @@ export function EditorPage({
     transport
       .getRevision(workflowId, publishedRevision)
       .then((rv) => {
-        if (live) setPublished(rv);
+        if (live) setPublished({ workflow: rv.workflow, revision: rv.revision });
       })
       .catch(() => {
         if (live) setPublished({ workflow: workflowId, revision: publishedRevision });
@@ -304,9 +299,7 @@ export function EditorPage({
       const rv = await transport.publish(workflowId, draft.etag);
       setPublished(rv);
       onWorkflowsChanged();
-      setNotice(
-        `已发布修订 r${rv.revision} · 定义摘要 ${shortDigest(rv.definition_digest)}`,
-      );
+      setNotice(`已发布修订 r${rv.revision}`);
     } catch (e) {
       if (e instanceof TransportError && (e.status === 412 || e.status === 409)) {
         setConflict({ code: e.code, message: e.message });
@@ -428,7 +421,7 @@ export function EditorPage({
         {published ? (
           <Tag
             on
-            title={`最近发布修订 r${published.revision} · 定义摘要 ${published.definition_digest ?? "—"}`}
+            title={`最近发布修订 r${published.revision}`}
           >
             <Mk shape="round" tone="c-ok" />
             修订 r{published.revision}

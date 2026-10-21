@@ -40,7 +40,7 @@ func TestExternalConsumerRunsLibrary(t *testing.T) {
 		},
 	}
 
-	prog, diags, err := inofy.Compile(context.Background(), def, catalog, inofy.CompileOptions{})
+	prog, diags, err := inofy.Compile(context.Background(), def, catalog, inofy.CompileOptions{ProgramID: "consumer-1"})
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestExternalConsumerRunsLibrary(t *testing.T) {
 	}
 
 	res, err := prog.Run(context.Background(), inofy.RunRequest{
-		Ref:   inofy.ExecutionRef{RunID: "consumer-1", ProgramDigest: prog.Meta().ProgramDigest},
+		Ref:   inofy.ExecutionRef{RunID: "consumer-1", ProgramID: prog.Meta().ProgramID},
 		Input: json.RawMessage(`{}`),
 	}, inofy.Bindings{Nodes: echoExec{}})
 	if err != nil {

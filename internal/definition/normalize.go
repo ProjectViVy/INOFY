@@ -12,11 +12,38 @@ package definition
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"math"
 	"slices"
 	"strconv"
 )
+
+// NormalizeJSONValue returns the canonical direct representation of one
+// JSON value, rejecting duplicate keys and trailing data before comparison.
+func NormalizeJSONValue(raw []byte) ([]byte, error) {
+	var findings []Finding
+	if err := scanDocument(raw, &findings); err != nil {
+		return nil, err
+	}
+	if len(findings) != 0 {
+		return nil, errors.New("JSON value contains duplicate object keys")
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var doc any
+	if err := dec.Decode(&doc); err != nil {
+		return nil, err
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); err == nil {
+		return nil, errors.New("JSON value contains trailing data")
+	} else if !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	return Canonical(doc)
+}
 
 // safeIntLimit is the largest exactly-representable JS integer.
 const safeIntLimit = int64(9007199254740991)

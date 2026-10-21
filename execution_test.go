@@ -72,12 +72,12 @@ func runDef(t *testing.T, store inofy.RunStore, exec inofy.NodeExecutor, def ino
 	if err != nil {
 		t.Fatalf("catalog: %v", err)
 	}
-	prog, diags, err := inofy.Compile(context.Background(), def, catalog, inofy.CompileOptions{})
+	prog, diags, err := inofy.Compile(context.Background(), def, catalog, inofy.CompileOptions{ProgramID: "test-program"})
 	if err != nil {
 		t.Fatalf("compile: %v (%v)", err, diags)
 	}
 	return prog.Run(context.Background(), inofy.RunRequest{
-		Ref:   inofy.ExecutionRef{RunID: "run-1", ProgramDigest: prog.Meta().ProgramDigest},
+		Ref:   inofy.ExecutionRef{RunID: "run-1", ProgramID: prog.Meta().ProgramID},
 		Input: json.RawMessage(`{}`),
 	}, inofy.Bindings{Nodes: exec, Runs: store})
 }
@@ -150,7 +150,7 @@ func TestEffectCommitBoundaries(t *testing.T) {
 
 	t.Run("CommitID idempotent replay vs body change", func(t *testing.T) {
 		store := inofy.NewMemoryRunStore()
-		ref := inofy.ExecutionRef{RunID: "r", Epoch: 1, ProgramDigest: "d"}
+		ref := inofy.ExecutionRef{RunID: "r", Epoch: 1, ProgramID: "d"}
 		c := inofy.RunCommit{CommitID: "c1",
 			Transition: inofy.StateTransition{Expected: "", Target: inofy.RunAdmitted},
 			Events:     []inofy.Event{{Kind: inofy.EventRunAdmitted}}}
@@ -170,9 +170,28 @@ func TestEffectCommitBoundaries(t *testing.T) {
 		}
 	})
 
+	t.Run("CommitID replay normalizes raw JSON object order", func(t *testing.T) {
+		store := inofy.NewMemoryRunStore()
+		ref := inofy.ExecutionRef{RunID: "r", Epoch: 1, ProgramID: "d"}
+		c := inofy.RunCommit{CommitID: "canonical",
+			Transition:    inofy.StateTransition{Expected: "", Target: inofy.RunAdmitted},
+			Events:        []inofy.Event{{Kind: inofy.EventRunAdmitted, Data: json.RawMessage(`{"b":2,"a":1}`)}},
+			AdmittedInput: json.RawMessage(`{"b":2,"a":1}`)}
+		first, err := store.Commit(ctx, ref, c)
+		if err != nil {
+			t.Fatalf("first commit: %v", err)
+		}
+		c.Events[0].Data = json.RawMessage(`{"a":1,"b":2}`)
+		c.AdmittedInput = json.RawMessage(`{"a":1,"b":2}`)
+		got, err := store.Commit(ctx, ref, c)
+		if err != nil || got != first {
+			t.Fatalf("semantically identical redelivery: receipt=%#v err=%v", got, err)
+		}
+	})
+
 	t.Run("stale epoch fails before writes", func(t *testing.T) {
 		store := inofy.NewMemoryRunStore()
-		ref := inofy.ExecutionRef{RunID: "r", Epoch: 7, ProgramDigest: "d"}
+		ref := inofy.ExecutionRef{RunID: "r", Epoch: 7, ProgramID: "d"}
 		_, err := store.Commit(ctx, ref, inofy.RunCommit{CommitID: "a",
 			Transition: inofy.StateTransition{Expected: "", Target: inofy.RunAdmitted}})
 		if err != nil {

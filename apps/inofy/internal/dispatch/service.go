@@ -33,13 +33,13 @@ type Service struct {
 	opts    Options
 	factory ProgramFactory
 
-	mu       sync.Mutex
-	wake     chan struct{}
-	stopped  chan struct{}
-	cancel   context.CancelFunc
-	running  bool
-	inflight sync.WaitGroup
-	executed atomic.Int64
+	mu        sync.Mutex
+	wake      chan struct{}
+	stopped   chan struct{}
+	cancel    context.CancelFunc
+	running   bool
+	inflight  sync.WaitGroup
+	executed  atomic.Int64
 	lifelines map[string]context.CancelFunc
 }
 
@@ -52,9 +52,9 @@ func New(store *storage.Store, opts Options, factory ProgramFactory) *Service {
 		opts.MaxPending = 32
 	}
 	return &Service{
-		store:   store,
-		opts:    opts,
-		factory: factory,
+		store:     store,
+		opts:      opts,
+		factory:   factory,
 		wake:      make(chan struct{}, 1),
 		stopped:   make(chan struct{}),
 		lifelines: map[string]context.CancelFunc{},
@@ -66,7 +66,7 @@ func New(store *storage.Store, opts Options, factory ProgramFactory) *Service {
 // key — then wakes the queue. The commit happens BEFORE dispatch:
 // a crash after Admit returns leaves an inspectable row the next
 // boot dispatches exactly once.
-func (s *Service) Admit(ctx context.Context, principal, workflowID string, revision uint64, source, input json.RawMessage, key string) (string, error) {
+func (s *Service) Admit(ctx context.Context, principal, workflowID string, revision uint64, programID string, source, input json.RawMessage, key string) (string, error) {
 	pending, err := s.store.PendingCount(ctx)
 	if err != nil {
 		return "", err
@@ -75,7 +75,7 @@ func (s *Service) Admit(ctx context.Context, principal, workflowID string, revis
 		return "", &inofy.Error{Code: inofy.ErrRevisionConflict, Path: workflowID,
 			Message: "pending admission bound reached"}
 	}
-	runID, err := s.store.Admit(ctx, principal, workflowID, revision, source, input, key)
+	runID, err := s.store.Admit(ctx, principal, workflowID, revision, programID, source, input, key)
 	if err != nil {
 		return "", err
 	}

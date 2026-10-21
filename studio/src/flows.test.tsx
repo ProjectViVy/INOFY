@@ -69,11 +69,12 @@ function fakeTransport(overrides: Partial<StudioTransport> = {}): StudioTranspor
     publish: vi.fn(async () => ({
       workflow: "wf",
       revision: 1,
-      definition_digest: "digest-1",
+      program_id: "wf/1",
     })),
     getRevision: vi.fn(async () => ({
       workflow: "wf",
       revision: 1,
+      program_id: "wf/1",
       artifact: baseArtifact,
     })),
     startRun: vi.fn(async () => ({ run_id: "run-1" })),

@@ -1,6 +1,6 @@
 // Mirrors the wire shapes of inofy.workflow/v1 (S02) and the App API
 // bodies (S09 §11.4). Field names stay snake_case on purpose — these
-// objects serialize straight to the backend digests; never rename.
+// objects carry the backend-owned values and identities; never rename.
 
 export type JsonValue =
   | string
@@ -144,18 +144,18 @@ export interface DraftView {
 export interface WorkflowSummary {
   workflow_id: string;
   revision?: number;
+  program_id?: string;
 }
 
-// publish 只回执指针与摘要，不回 artifact：取定义要再走 getRevision。
+// publish 回执不可变修订指针，不回 artifact：取定义要再走 getRevision。
 export interface PublishView {
   workflow: string;
   revision: number;
-  definition_digest?: string;
+  program_id: string;
 }
 
 export interface RevisionView extends PublishView {
   artifact: Artifact;
-  used_catalog_digest?: string;
 }
 
 // WaitRequest is a durable suspension point (types.go §8.4).

@@ -2,6 +2,7 @@ package inofy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"runtime/debug"
@@ -10,8 +11,8 @@ import (
 	"github.com/ProjectViVy/inofy/internal/einoruntime"
 )
 
-// compilerVersion is the INOFY compiler identity bound into
-// ProgramDigest (architecture §4.3).
+// compilerVersion identifies the compiler build recorded with the
+// owner-allocated program revision.
 const compilerVersion = "inofy/v0.1"
 
 // Compile performs structural validation and compilation without I/O
@@ -53,11 +54,32 @@ func Compile(ctx context.Context, def Definition, catalog Catalog, options Compi
 	if err != nil {
 		return nil, nil, adaptError(err)
 	}
-	meta, err := programMeta(def, catalog)
+	catalogContract, err := compileCatalogContract(doc, catalog)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, &Error{Code: ErrInvalidDefinition, Err: err,
+			Message: "catalog contract cannot be encoded for checkpoint compatibility"}
 	}
-	return &Program{meta: meta, rt: rt, compileLimits: lim}, nil, nil
+	meta := programMeta(options.ProgramID)
+	return &Program{meta: meta, rt: rt, compileLimits: lim, catalogContract: catalogContract}, nil, nil
+}
+
+func compileCatalogContract(doc map[string]any, catalog Catalog) (json.RawMessage, error) {
+	types := make([]definition.TypeRef, 0, len(catalog.Types()))
+	for _, id := range catalog.Types() {
+		descriptor, ok := catalog.Lookup(id)
+		if ok {
+			types = append(types, typeRefOf(descriptor))
+		}
+	}
+	contract, err := definition.CatalogContractDoc(doc, types)
+	if err != nil {
+		return nil, err
+	}
+	canonical, err := definition.Canonical(contract)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(canonical), nil
 }
 
 // typeInfos projects the catalog's used descriptors into the runtime's
@@ -80,39 +102,19 @@ func typeInfos(catalog Catalog) map[string]einoruntime.TypeInfo {
 	return out
 }
 
-// programMeta binds the program identity: definition and catalog
-// digests, compiler version, and the exact Eino build — all hashed
-// into ProgramDigest in normal-v1 form.
-func programMeta(def Definition, catalog Catalog) (ProgramMeta, error) {
-	dd, err := DefinitionDigest(def)
-	if err != nil {
-		return ProgramMeta{}, err
+// programMeta records the identity allocated by the definition owner.
+// INOFY keeps the compiler/build facts as ordinary metadata and never
+// derives identity from content.
+func programMeta(programID string) ProgramMeta {
+	return ProgramMeta{
+		ProgramID:       programID,
+		CompilerVersion: compilerVersion,
+		EinoBuild:       einoBuild(),
 	}
-	cd, err := CatalogDigest(def, catalog)
-	if err != nil {
-		return ProgramMeta{}, err
-	}
-	meta := ProgramMeta{
-		DefinitionDigest: dd,
-		CatalogDigest:    cd,
-		CompilerVersion:  compilerVersion,
-		EinoBuild:        einoBuild(),
-	}
-	norm, err := definition.Canonical(map[string]any{
-		"compiler_version":  meta.CompilerVersion,
-		"eino_build":        meta.EinoBuild,
-		"definition_digest": meta.DefinitionDigest,
-		"catalog_digest":    meta.CatalogDigest,
-	})
-	if err != nil {
-		return ProgramMeta{}, err
-	}
-	meta.ProgramDigest = definition.DigestBytes(norm)
-	return meta, nil
 }
 
-// einoBuild reports the exact eino module version linked into the
-// binary — the ProgramDigest binds the build identity, not a claim.
+// einoBuild reports the exact Eino module version linked into the
+// binary; checkpoints bind this build metadata separately from ProgramID.
 func einoBuild() string {
 	bi, ok := debug.ReadBuildInfo()
 	if !ok {

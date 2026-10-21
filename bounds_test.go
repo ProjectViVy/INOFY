@@ -61,7 +61,7 @@ func TestRunBounds(t *testing.T) {
 			TypeID:           "inofy.value@1",
 			ImplementationID: "impl-1",
 		}})
-		prog, diags, err := inofy.Compile(ctx, def, catalog, inofy.CompileOptions{})
+		prog, diags, err := inofy.Compile(ctx, def, catalog, inofy.CompileOptions{ProgramID: "test-program"})
 		if err != nil {
 			t.Fatalf("compile: %v", err)
 		}
@@ -69,9 +69,9 @@ func TestRunBounds(t *testing.T) {
 			t.Fatalf("compile diags: %#v", diags)
 		}
 		res, err := prog.Run(ctx, inofy.RunRequest{
-			Ref:     inofy.ExecutionRef{RunID: "r", ProgramDigest: prog.Meta().ProgramDigest},
-			Input:   json.RawMessage(`{}`),
-			Limits:  inofy.Limits{Parallelism: 4},
+			Ref:    inofy.ExecutionRef{RunID: "r", ProgramID: prog.Meta().ProgramID},
+			Input:  json.RawMessage(`{}`),
+			Limits: inofy.Limits{Parallelism: 4},
 		}, inofy.Bindings{Nodes: exec, Runs: inofy.NewMemoryRunStore()})
 		if err != nil {
 			t.Fatalf("run: %v", err)
@@ -91,8 +91,8 @@ func TestRunBounds(t *testing.T) {
 			Graph: inofy.Graph{
 				Nodes: []inofy.Node{
 					{ID: "rep", Kind: inofy.NodeKindRepeat,
-						Initial:      map[string]inofy.Binding{"acc": {Literal: json.RawMessage(`0`)}},
-						StateSchema:  json.RawMessage(`{"type":"object"}`),
+						Initial:       map[string]inofy.Binding{"acc": {Literal: json.RawMessage(`0`)}},
+						StateSchema:   json.RawMessage(`{"type":"object"}`),
 						MaxIterations: 300,
 						Until: &inofy.Predicate{
 							Op:    "gte",
@@ -130,7 +130,8 @@ func TestRunBounds(t *testing.T) {
 			ImplementationID: "impl-1",
 		}})
 		prog, diags, err := inofy.Compile(ctx, def, catalog, inofy.CompileOptions{
-			Limits: inofy.Limits{MaxActivations: 512, MaxIterations: 300},
+			ProgramID: "test-program",
+			Limits:    inofy.Limits{MaxActivations: 512, MaxIterations: 300},
 		})
 		if err != nil {
 			t.Fatalf("compile: %v", err)
@@ -139,9 +140,9 @@ func TestRunBounds(t *testing.T) {
 			t.Fatalf("compile diags: %#v", diags)
 		}
 		_, err = prog.Run(ctx, inofy.RunRequest{
-			Ref:     inofy.ExecutionRef{RunID: "r", ProgramDigest: prog.Meta().ProgramDigest},
-			Input:   json.RawMessage(`{}`),
-			Limits:  inofy.Limits{MaxActivations: 256, MaxIterations: 300},
+			Ref:    inofy.ExecutionRef{RunID: "r", ProgramID: prog.Meta().ProgramID},
+			Input:  json.RawMessage(`{}`),
+			Limits: inofy.Limits{MaxActivations: 256, MaxIterations: 300},
 		}, inofy.Bindings{Nodes: exec, Runs: inofy.NewMemoryRunStore()})
 		var ie *inofy.Error
 		if !errors.As(err, &ie) || ie.Code != inofy.ErrBudgetExceeded {
@@ -177,7 +178,7 @@ func TestRunBounds(t *testing.T) {
 			TypeID:           "inofy.value@1",
 			ImplementationID: "impl-1",
 		}})
-		prog, diags, err := inofy.Compile(ctx, def, catalog, inofy.CompileOptions{})
+		prog, diags, err := inofy.Compile(ctx, def, catalog, inofy.CompileOptions{ProgramID: "test-program"})
 		if err != nil {
 			t.Fatalf("compile: %v", err)
 		}
@@ -185,7 +186,7 @@ func TestRunBounds(t *testing.T) {
 			t.Fatalf("compile diags: %#v", diags)
 		}
 		_, _ = prog.Run(ctx, inofy.RunRequest{
-			Ref:   inofy.ExecutionRef{RunID: "r", ProgramDigest: prog.Meta().ProgramDigest},
+			Ref:   inofy.ExecutionRef{RunID: "r", ProgramID: prog.Meta().ProgramID},
 			Input: json.RawMessage(`{}`),
 		}, inofy.Bindings{Nodes: exec, Runs: inofy.NewMemoryRunStore()})
 		if len(attempts) != 3 {
@@ -214,7 +215,7 @@ func TestRunBounds(t *testing.T) {
 			ImplementationID: "impl-1",
 			Replay:           inofy.ReplayNonReplayable,
 		}})
-		_, diags, err := inofy.Compile(ctx, def, catalog, inofy.CompileOptions{})
+		_, diags, err := inofy.Compile(ctx, def, catalog, inofy.CompileOptions{ProgramID: "test-program"})
 		if err != nil {
 			t.Fatalf("compile: %v", err)
 		}
@@ -243,7 +244,7 @@ func TestRunBounds(t *testing.T) {
 			TypeID:           "inofy.value@1",
 			ImplementationID: "impl-1",
 		}})
-		prog, diags, err := inofy.Compile(ctx, def, catalog, inofy.CompileOptions{})
+		prog, diags, err := inofy.Compile(ctx, def, catalog, inofy.CompileOptions{ProgramID: "test-program"})
 		if err != nil {
 			t.Fatalf("compile: %v", err)
 		}
@@ -251,7 +252,7 @@ func TestRunBounds(t *testing.T) {
 			t.Fatalf("compile diags: %#v", diags)
 		}
 		res, _ := prog.Run(ctx, inofy.RunRequest{
-			Ref:   inofy.ExecutionRef{RunID: "r", ProgramDigest: prog.Meta().ProgramDigest},
+			Ref:   inofy.ExecutionRef{RunID: "r", ProgramID: prog.Meta().ProgramID},
 			Input: json.RawMessage(`{}`),
 		}, inofy.Bindings{Nodes: exec, Runs: inofy.NewMemoryRunStore()})
 		if calls.Load() != 1 {
@@ -286,13 +287,13 @@ func TestRunBounds(t *testing.T) {
 			TypeID:           "inofy.value@1",
 			ImplementationID: "impl-1",
 		}})
-		prog, _, err := inofy.Compile(ctx, def, catalog, inofy.CompileOptions{})
+		prog, _, err := inofy.Compile(ctx, def, catalog, inofy.CompileOptions{ProgramID: "test-program"})
 		if err != nil {
 			t.Fatalf("compile: %v", err)
 		}
 		start := time.Now()
 		_, _ = prog.Run(runCtx, inofy.RunRequest{
-			Ref:   inofy.ExecutionRef{RunID: "r", ProgramDigest: prog.Meta().ProgramDigest},
+			Ref:   inofy.ExecutionRef{RunID: "r", ProgramID: prog.Meta().ProgramID},
 			Input: json.RawMessage(`{}`),
 		}, inofy.Bindings{Nodes: exec, Runs: inofy.NewMemoryRunStore()})
 		if time.Since(start) > 2*time.Second {
@@ -319,7 +320,7 @@ func TestRunBounds(t *testing.T) {
 			ImplementationID: "impl-1",
 			OutputSchema:     json.RawMessage(`{"type":"number"}`),
 		}})
-		_, diags, err := inofy.Compile(ctx, def, catalog, inofy.CompileOptions{})
+		_, diags, err := inofy.Compile(ctx, def, catalog, inofy.CompileOptions{ProgramID: "test-program"})
 		if err != nil {
 			t.Fatalf("compile: %v", err)
 		}
@@ -351,7 +352,7 @@ func TestRunBounds(t *testing.T) {
 			ImplementationID: "impl-1",
 			OutputSchema:     json.RawMessage(`{"type":"number"}`),
 		}})
-		prog, diags, err := inofy.Compile(ctx, def, catalog, inofy.CompileOptions{})
+		prog, diags, err := inofy.Compile(ctx, def, catalog, inofy.CompileOptions{ProgramID: "test-program"})
 		if err != nil {
 			t.Fatalf("compile: %v", err)
 		}
@@ -359,7 +360,7 @@ func TestRunBounds(t *testing.T) {
 			t.Fatalf("compile diags: %#v", diags)
 		}
 		res, _ := prog.Run(ctx, inofy.RunRequest{
-			Ref:   inofy.ExecutionRef{RunID: "r", ProgramDigest: prog.Meta().ProgramDigest},
+			Ref:   inofy.ExecutionRef{RunID: "r", ProgramID: prog.Meta().ProgramID},
 			Input: json.RawMessage(`{}`),
 		}, inofy.Bindings{Nodes: exec, Runs: store})
 		if res.Status != inofy.RunSucceeded {
@@ -397,7 +398,7 @@ func TestRunBounds(t *testing.T) {
 			TypeID:           "inofy.value@1",
 			ImplementationID: "impl-1",
 		}})
-		prog, diags, err := inofy.Compile(ctx, def, catalog, inofy.CompileOptions{})
+		prog, diags, err := inofy.Compile(ctx, def, catalog, inofy.CompileOptions{ProgramID: "test-program"})
 		if err != nil {
 			t.Fatalf("compile: %v", err)
 		}
@@ -405,9 +406,9 @@ func TestRunBounds(t *testing.T) {
 			t.Fatalf("compile diags: %#v", diags)
 		}
 		_, err = prog.Run(ctx, inofy.RunRequest{
-			Ref:     inofy.ExecutionRef{RunID: "r", ProgramDigest: prog.Meta().ProgramDigest},
-			Input:   json.RawMessage(`{}`),
-			Limits:  inofy.Limits{MaxNodeOutputBytes: 1024},
+			Ref:    inofy.ExecutionRef{RunID: "r", ProgramID: prog.Meta().ProgramID},
+			Input:  json.RawMessage(`{}`),
+			Limits: inofy.Limits{MaxNodeOutputBytes: 1024},
 		}, inofy.Bindings{Nodes: exec, Runs: inofy.NewMemoryRunStore()})
 		var ie *inofy.Error
 		if !errors.As(err, &ie) || ie.Code != inofy.ErrBudgetExceeded {

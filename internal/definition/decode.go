@@ -1,5 +1,5 @@
 // Package definition owns the strict decoding, schema validation,
-// topology checks and normalized digests for inofy artifacts
+// topology checks and normalized values for inofy artifacts
 // (architecture §4.1). It operates on generic decoded documents so the
 // root inofy package can export typed adapters without an import cycle.
 package definition

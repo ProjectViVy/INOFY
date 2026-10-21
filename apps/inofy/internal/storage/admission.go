@@ -1,9 +1,9 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -12,28 +12,43 @@ import (
 	inofy "github.com/ProjectViVy/inofy"
 )
 
-// Admit persists an immutable run admission — snapshot binding, input
-// digest and idempotency key — before any dispatch wakeup (§11.2,
+// Admit persists an immutable run admission — snapshot binding, exact
+// canonical input and idempotency key — before any dispatch wakeup (§11.2,
 // S08 plan). Same (principal, workflow, key) replays the same run ID.
 // admissionFailure counts as a pending-admission slot so a queue
 // bound can reject without creating a hidden row.
-func (s *Store) Admit(ctx context.Context, principal, workflowID string, revision uint64, source, input json.RawMessage, key string) (string, error) {
+func (s *Store) Admit(ctx context.Context, principal, workflowID string, revision uint64, programID string, source, input json.RawMessage, key string) (string, error) {
+	if programID == "" {
+		return "", &inofy.Error{Code: inofy.ErrInvalidDefinition, Path: workflowID,
+			Message: "owner-allocated program id required"}
+	}
+	canonicalSource, err := inofy.NormalizeJSONValue(source)
+	if err != nil {
+		return "", err
+	}
+	canonicalInput, err := inofy.NormalizeJSONValue(input)
+	if err != nil {
+		return "", err
+	}
 	var existing string
-	err := s.db.QueryRowContext(ctx,
-		`SELECT run_id FROM runs WHERE principal = ? AND workflow_id = ? AND admission_key = ?`,
-		principal, workflowID, key).Scan(&existing)
+	var oldSource, oldInput []byte
+	var oldProgramID string
+	err = s.db.QueryRowContext(ctx,
+		`SELECT run_id, source_json, input_json, program_id FROM runs WHERE principal = ? AND workflow_id = ? AND admission_key = ?`,
+		principal, workflowID, key).Scan(&existing, &oldSource, &oldInput, &oldProgramID)
 	if err == nil {
+		if oldProgramID != programID || !bytes.Equal(oldSource, canonicalSource) || !bytes.Equal(oldInput, canonicalInput) {
+			return "", &inofy.Error{Code: inofy.ErrIdempotencyConflict, Path: workflowID,
+				Message: "admission key reused with different source or input"}
+		}
 		return existing, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return "", err
 	}
-	sum := sha256.Sum256(input)
-	inputDigest := "sha256:" + hex.EncodeToString(sum[:])
 	runID := newRunID()
 	admitData, _ := json.Marshal(map[string]any{
-		"input_digest": inputDigest,
-		"limits":       inofy.Limits{},
+		"limits": inofy.Limits{},
 	})
 	// Status 'queued' is a pre-admitted placeholder row; the run's
 	// first durable commit (EventRunAdmitted Expected="") transitions
@@ -43,10 +58,10 @@ func (s *Store) Admit(ctx context.Context, principal, workflowID string, revisio
 	// immutable admitted snapshot — a later draft edit cannot change
 	// what this run executes (§11.2).
 	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO runs (run_id, workflow_id, principal, revision, program_digest, status, input_digest, limits_json, admission_key, source_json, input_json)
-		 VALUES (?, ?, ?, ?, '', 'queued', ?, ?, ?, ?, ?)`,
-		runID, workflowID, principal, revision, inputDigest, string(admitData), key,
-		[]byte(source), []byte(input)); err != nil {
+		`INSERT INTO runs (run_id, workflow_id, principal, revision, program_id, status, limits_json, admission_key, source_json, input_json)
+		 VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)`,
+		runID, workflowID, principal, revision, programID, string(admitData), key,
+		canonicalSource, canonicalInput); err != nil {
 		return "", err
 	}
 	return runID, nil
@@ -54,14 +69,14 @@ func (s *Store) Admit(ctx context.Context, principal, workflowID string, revisio
 
 // RunSource returns the immutable admitted snapshot, input and
 // binding for a run row — what a factory rebuilds the program from.
-func (s *Store) RunSource(ctx context.Context, runID string) (source, input json.RawMessage, workflowID string, revision uint64, err error) {
+func (s *Store) RunSource(ctx context.Context, runID string) (source, input json.RawMessage, programID, workflowID string, revision uint64, err error) {
 	err = s.db.QueryRowContext(ctx,
-		`SELECT source_json, input_json, workflow_id, revision FROM runs WHERE run_id = ?`,
-		runID).Scan(&source, &input, &workflowID, &revision)
+		`SELECT source_json, input_json, program_id, workflow_id, revision FROM runs WHERE run_id = ?`,
+		runID).Scan(&source, &input, &programID, &workflowID, &revision)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil, "", 0, &inofy.Error{Code: inofy.ErrRevisionConflict, Path: runID, Message: "unknown run"}
+		return nil, nil, "", "", 0, &inofy.Error{Code: inofy.ErrRevisionConflict, Path: runID, Message: "unknown run"}
 	}
-	return source, input, workflowID, revision, err
+	return source, input, programID, workflowID, revision, err
 }
 
 // QueuedRuns returns run IDs in admission order for the bounded

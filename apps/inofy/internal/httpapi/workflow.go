@@ -100,7 +100,7 @@ func (h *handler) postPublish(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"workflow": rev.WorkflowID, "revision": rev.Revision,
-		"definition_digest": rev.DefinitionDigest,
+		"program_id": rev.ProgramID,
 	})
 }
 
@@ -118,8 +118,7 @@ func (h *handler) getRevision(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"workflow": id, "revision": v.Revision, "artifact": v.Artifact,
-		"definition_digest":   v.DefinitionDigest,
-		"used_catalog_digest": v.UsedCatalogDigest,
+		"program_id": v.ProgramID,
 	})
 }
 

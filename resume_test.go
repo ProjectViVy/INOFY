@@ -3,6 +3,7 @@ package inofy_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,6 +17,19 @@ import (
 // continuation answer on resume.
 type resumeExec struct {
 	continued *atomic.Int64
+}
+
+type checkpointOverlayStore struct {
+	inofy.RunStore
+	alter func(*inofy.CheckpointEnvelope)
+}
+
+func (s checkpointOverlayStore) Load(ctx context.Context, runID string) (inofy.RecoveryState, error) {
+	state, err := s.RunStore.Load(ctx, runID)
+	if err == nil && state.LatestCheckpoint != nil {
+		s.alter(state.LatestCheckpoint)
+	}
+	return state, err
 }
 
 func (e *resumeExec) Execute(ctx context.Context, c inofy.NodeCall) (inofy.NodeReply, error) {
@@ -49,7 +63,7 @@ func TestResumeAndCrashMatrix(t *testing.T) {
 	newProg := func() (*inofy.Program, *inofy.MemoryRunStore, *resumeExec) {
 		store := inofy.NewMemoryRunStore()
 		exec := &resumeExec{continued: &atomic.Int64{}}
-		prog, diags, err := inofy.Compile(ctx, resumeDef(), suspendCatalog(), inofy.CompileOptions{})
+		prog, diags, err := inofy.Compile(ctx, resumeDef(), suspendCatalog(), inofy.CompileOptions{ProgramID: "test-program"})
 		if err != nil || len(diags) != 0 {
 			t.Fatalf("compile: %v %#v", err, diags)
 		}
@@ -57,7 +71,7 @@ func TestResumeAndCrashMatrix(t *testing.T) {
 	}
 	admit := func(prog *inofy.Program, store *inofy.MemoryRunStore, exec *resumeExec, runID string) inofy.RunResult {
 		res, _ := prog.Run(ctx, inofy.RunRequest{
-			Ref:   inofy.ExecutionRef{RunID: runID, ProgramDigest: prog.Meta().ProgramDigest},
+			Ref:   inofy.ExecutionRef{RunID: runID, ProgramID: prog.Meta().ProgramID},
 			Input: json.RawMessage(`{}`),
 		}, inofy.Bindings{Nodes: exec, Runs: store})
 		if res.Status != inofy.RunWaiting {
@@ -70,7 +84,7 @@ func TestResumeAndCrashMatrix(t *testing.T) {
 		prog, store, exec := newProg()
 		res0 := admit(prog, store, exec, "r")
 		res, err := prog.Run(ctx, inofy.RunRequest{
-			Ref:    inofy.ExecutionRef{RunID: "r", ProgramDigest: prog.Meta().ProgramDigest},
+			Ref: inofy.ExecutionRef{RunID: "r", ProgramID: prog.Meta().ProgramID},
 			Resume: &inofy.ResumeRequest{
 				Answers: map[string]json.RawMessage{res0.Waits[0].RequestID: json.RawMessage(`{"ok":true}`)},
 			},
@@ -83,11 +97,57 @@ func TestResumeAndCrashMatrix(t *testing.T) {
 		}
 	})
 
+	t.Run("compiler version change rejects checkpoint", func(t *testing.T) {
+		prog, store, exec := newProg()
+		res0 := admit(prog, store, exec, "compiler-version")
+		overlay := checkpointOverlayStore{RunStore: store, alter: func(env *inofy.CheckpointEnvelope) {
+			env.CompilerVersion = "inofy/v-next"
+		}}
+		_, err := prog.Run(ctx, inofy.RunRequest{
+			Ref: inofy.ExecutionRef{RunID: "compiler-version", ProgramID: prog.Meta().ProgramID},
+			Resume: &inofy.ResumeRequest{
+				Answers: map[string]json.RawMessage{res0.Waits[0].RequestID: json.RawMessage(`{"ok":true}`)},
+			},
+		}, inofy.Bindings{Nodes: exec, Runs: overlay})
+		var ie *inofy.Error
+		if !errors.As(err, &ie) || ie.Code != inofy.ErrCheckpointIncompatible {
+			t.Fatalf("compiler drift was accepted: %v", err)
+		}
+		state, loadErr := store.Load(ctx, "compiler-version")
+		if loadErr != nil || state.Status != inofy.RunWaiting || exec.continued.Load() != 0 {
+			t.Fatalf("compiler drift changed the waiting run: state=%#v err=%v continued=%d", state, loadErr, exec.continued.Load())
+		}
+	})
+
+	t.Run("catalog implementation change rejects checkpoint", func(t *testing.T) {
+		prog, store, exec := newProg()
+		res0 := admit(prog, store, exec, "catalog-drift")
+		changed, diags, err := inofy.Compile(ctx, resumeDef(), suspendCatalogWithImplementation("impl-w-v2"),
+			inofy.CompileOptions{ProgramID: prog.Meta().ProgramID})
+		if err != nil || len(diags) != 0 {
+			t.Fatalf("compile changed catalog: %v %#v", err, diags)
+		}
+		_, err = changed.Run(ctx, inofy.RunRequest{
+			Ref: inofy.ExecutionRef{RunID: "catalog-drift", ProgramID: changed.Meta().ProgramID},
+			Resume: &inofy.ResumeRequest{
+				Answers: map[string]json.RawMessage{res0.Waits[0].RequestID: json.RawMessage(`{"ok":true}`)},
+			},
+		}, inofy.Bindings{Nodes: exec, Runs: store})
+		var ie *inofy.Error
+		if !errors.As(err, &ie) || ie.Code != inofy.ErrCheckpointIncompatible {
+			t.Fatalf("catalog drift was accepted: %v", err)
+		}
+		state, loadErr := store.Load(ctx, "catalog-drift")
+		if loadErr != nil || state.Status != inofy.RunWaiting || exec.continued.Load() != 0 {
+			t.Fatalf("catalog drift changed the waiting run: state=%#v err=%v continued=%d", state, loadErr, exec.continued.Load())
+		}
+	})
+
 	t.Run("partial answer set rejected, run stays waiting", func(t *testing.T) {
 		_, store, _ := newProg()
 		// Two waits needed: compile the two-wait shape here.
 		def := suspendDef()
-		prog2, diags, err := inofy.Compile(ctx, def, suspendCatalog(), inofy.CompileOptions{})
+		prog2, diags, err := inofy.Compile(ctx, def, suspendCatalog(), inofy.CompileOptions{ProgramID: "test-program"})
 		if err != nil || len(diags) != 0 {
 			t.Fatalf("compile: %v %#v", err, diags)
 		}
@@ -100,7 +160,7 @@ func TestResumeAndCrashMatrix(t *testing.T) {
 		done := make(chan inofy.RunResult, 1)
 		go func() {
 			res, _ := prog2.Run(ctx, inofy.RunRequest{
-				Ref:   inofy.ExecutionRef{RunID: "r", ProgramDigest: prog2.Meta().ProgramDigest},
+				Ref:   inofy.ExecutionRef{RunID: "r", ProgramID: prog2.Meta().ProgramID},
 				Input: json.RawMessage(`{}`),
 			}, inofy.Bindings{Nodes: exec2, Runs: store})
 			done <- res
@@ -111,7 +171,7 @@ func TestResumeAndCrashMatrix(t *testing.T) {
 			t.Fatalf("setup: %q waits=%d", res0.Status, len(res0.Waits))
 		}
 		_, err = prog2.Run(ctx, inofy.RunRequest{
-			Ref:    inofy.ExecutionRef{RunID: "r", ProgramDigest: prog2.Meta().ProgramDigest},
+			Ref: inofy.ExecutionRef{RunID: "r", ProgramID: prog2.Meta().ProgramID},
 			Resume: &inofy.ResumeRequest{
 				Answers: map[string]json.RawMessage{res0.Waits[0].RequestID: json.RawMessage(`{"ok":true}`)},
 			},
@@ -125,7 +185,7 @@ func TestResumeAndCrashMatrix(t *testing.T) {
 		}
 	})
 
-	t.Run("wrong digest identity denied", func(t *testing.T) {
+	t.Run("wrong program identity denied", func(t *testing.T) {
 		prog, store, exec := newProg()
 		res0 := admit(prog, store, exec, "r")
 		// A different program compiled from a changed definition must
@@ -134,12 +194,12 @@ func TestResumeAndCrashMatrix(t *testing.T) {
 		def2.Graph.Nodes = append(def2.Graph.Nodes,
 			inofy.Node{ID: "x", Kind: inofy.NodeKindCall, Type: "inofy.value@1"})
 		def2.Graph.Exits = append(def2.Graph.Exits, "x")
-		prog2, diags, err := inofy.Compile(ctx, def2, suspendCatalog(), inofy.CompileOptions{})
+		prog2, diags, err := inofy.Compile(ctx, def2, suspendCatalog(), inofy.CompileOptions{ProgramID: "another-program"})
 		if err != nil || len(diags) != 0 {
 			t.Fatalf("compile2: %v %#v", err, diags)
 		}
 		_, err = prog2.Run(ctx, inofy.RunRequest{
-			Ref: inofy.ExecutionRef{RunID: "r", ProgramDigest: prog2.Meta().ProgramDigest},
+			Ref: inofy.ExecutionRef{RunID: "r", ProgramID: prog2.Meta().ProgramID},
 			Resume: &inofy.ResumeRequest{
 				Answers: map[string]json.RawMessage{res0.Waits[0].RequestID: json.RawMessage(`{"ok":true}`)},
 			},
@@ -159,10 +219,10 @@ func TestResumeAndCrashMatrix(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				res, err := prog.Run(ctx, inofy.RunRequest{
-					Ref: inofy.ExecutionRef{RunID: "r", ProgramDigest: prog.Meta().ProgramDigest},
+					Ref: inofy.ExecutionRef{RunID: "r", ProgramID: prog.Meta().ProgramID},
 					Resume: &inofy.ResumeRequest{
 						IdempotencyKey: "k1",
-						Answers: map[string]json.RawMessage{res0.Waits[0].RequestID: json.RawMessage(`{"ok":true}`)},
+						Answers:        map[string]json.RawMessage{res0.Waits[0].RequestID: json.RawMessage(`{"ok":true}`)},
 					},
 				}, inofy.Bindings{Nodes: exec, Runs: store})
 				if err != nil || res.Status != inofy.RunSucceeded {
@@ -186,11 +246,12 @@ func TestResumeAndCrashMatrix(t *testing.T) {
 		// Simulate a crash: admit+start committed, effect unresolved,
 		// no settlement.
 		inner := store
-		ref := inofy.ExecutionRef{RunID: "r", ProgramDigest: prog.Meta().ProgramDigest}
+		ref := inofy.ExecutionRef{RunID: "r", ProgramID: prog.Meta().ProgramID}
 		_, err := inner.Commit(ctx, ref, inofy.RunCommit{
-			CommitID:   "r/0/a/0/1",
-			Events:     []inofy.Event{{Kind: inofy.EventRunAdmitted}},
-			Transition: inofy.StateTransition{Expected: "", Target: inofy.RunAdmitted},
+			CommitID:      "r/0/a/0/1",
+			Events:        []inofy.Event{{Kind: inofy.EventRunAdmitted}},
+			Transition:    inofy.StateTransition{Expected: "", Target: inofy.RunAdmitted},
+			AdmittedInput: json.RawMessage(`{}`),
 		})
 		if err != nil {
 			t.Fatalf("admit seed: %v", err)
@@ -230,10 +291,10 @@ func TestResumeAndCrashMatrix(t *testing.T) {
 		prog, store, exec := newProg()
 		res0 := admit(prog, store, exec, "r")
 		req := inofy.RunRequest{
-			Ref: inofy.ExecutionRef{RunID: "r", ProgramDigest: prog.Meta().ProgramDigest},
+			Ref: inofy.ExecutionRef{RunID: "r", ProgramID: prog.Meta().ProgramID},
 			Resume: &inofy.ResumeRequest{
 				IdempotencyKey: "same",
-				Answers: map[string]json.RawMessage{res0.Waits[0].RequestID: json.RawMessage(`{"ok":true}`)},
+				Answers:        map[string]json.RawMessage{res0.Waits[0].RequestID: json.RawMessage(`{"ok":true}`)},
 			},
 		}
 		res1, _ := prog.Run(ctx, req, inofy.Bindings{Nodes: exec, Runs: store})
@@ -247,6 +308,16 @@ func TestResumeAndCrashMatrix(t *testing.T) {
 		}
 		if exec.continued.Load() != 1 {
 			t.Fatalf("repeated resume re-executed effect: %d", exec.continued.Load())
+		}
+		foreign := req
+		foreign.Ref.HostBindingID = "foreign-host"
+		if _, err := prog.Run(ctx, foreign, inofy.Bindings{Nodes: exec, Runs: store}); err == nil {
+			t.Fatal("terminal resume replay accepted a foreign host binding")
+		} else {
+			var ie *inofy.Error
+			if !errors.As(err, &ie) || ie.Code != inofy.ErrCheckpointIncompatible {
+				t.Fatalf("wrong error for foreign host binding: %v", err)
+			}
 		}
 		_ = err2
 		_ = res2

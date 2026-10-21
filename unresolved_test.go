@@ -29,7 +29,7 @@ func runFailingNode(t *testing.T, execErr error, onError *inofy.ErrorPolicy) (in
 		TypeID:           "inofy.value@1",
 		ImplementationID: "impl-1",
 	}})
-	prog, diags, err := inofy.Compile(ctx, def, catalog, inofy.CompileOptions{})
+	prog, diags, err := inofy.Compile(ctx, def, catalog, inofy.CompileOptions{ProgramID: "test-program"})
 	if err != nil || len(diags) != 0 {
 		t.Fatalf("compile: err=%v diags=%v", err, diags)
 	}
@@ -42,7 +42,7 @@ func runFailingNode(t *testing.T, execErr error, onError *inofy.ErrorPolicy) (in
 	// Run reports node/run verdicts via res.Status; a non-nil error is the
 	// settled failure itself, not a driver failure.
 	res, _ := prog.Run(ctx, inofy.RunRequest{
-		Ref:   inofy.ExecutionRef{RunID: "r", ProgramDigest: prog.Meta().ProgramDigest},
+		Ref:   inofy.ExecutionRef{RunID: "r", ProgramID: prog.Meta().ProgramID},
 		Input: json.RawMessage(`{}`),
 	}, inofy.Bindings{Nodes: exec, Runs: store})
 	_ = res

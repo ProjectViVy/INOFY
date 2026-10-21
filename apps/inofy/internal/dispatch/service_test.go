@@ -43,12 +43,12 @@ func appFixture(t *testing.T, dir string) (*storage.Store, *dispatch.Service, *c
 	}
 	exec := &countingExec{calls: &atomic.Int64{}}
 	d := dispatch.New(s, dispatch.Options{MaxActive: 4, MaxPending: 32}, func(runID string) (*inofy.Program, inofy.Bindings, inofy.RunRequest, error) {
-		prog, diags, err := inofy.Compile(context.Background(), testDef(), testCatalog(), inofy.CompileOptions{})
+		prog, diags, err := inofy.Compile(context.Background(), testDef(), testCatalog(), inofy.CompileOptions{ProgramID: "wf/1"})
 		if err != nil || len(diags) != 0 {
 			t.Fatalf("compile: %v %#v", err, diags)
 		}
 		return prog, inofy.Bindings{Nodes: exec, Runs: s}, inofy.RunRequest{
-			Ref:   inofy.ExecutionRef{RunID: runID, ProgramDigest: prog.Meta().ProgramDigest},
+			Ref:   inofy.ExecutionRef{RunID: runID, ProgramID: prog.Meta().ProgramID},
 			Input: json.RawMessage(`{}`),
 		}, nil
 	})
@@ -87,9 +87,9 @@ func TestRestartClassificationAndQueueBounds(t *testing.T) {
 		gate := make(chan struct{})
 		exec := &gateExec{calls: &atomic.Int64{}, gate: gate}
 		d := dispatch.New(s, dispatch.Options{MaxActive: 4, MaxPending: 32}, func(runID string) (*inofy.Program, inofy.Bindings, inofy.RunRequest, error) {
-			prog, _, _ := inofy.Compile(ctx, testDef(), testCatalog(), inofy.CompileOptions{})
+			prog, _, _ := inofy.Compile(ctx, testDef(), testCatalog(), inofy.CompileOptions{ProgramID: "wf/1"})
 			return prog, inofy.Bindings{Nodes: exec, Runs: s}, inofy.RunRequest{
-				Ref:   inofy.ExecutionRef{RunID: runID, ProgramDigest: prog.Meta().ProgramDigest},
+				Ref:   inofy.ExecutionRef{RunID: runID, ProgramID: prog.Meta().ProgramID},
 				Input: json.RawMessage(`{}`),
 			}, nil
 		})
@@ -99,7 +99,7 @@ func TestRestartClassificationAndQueueBounds(t *testing.T) {
 		// queue; the 33rd+ are rejected without a hidden row.
 		var admitted, rejected int
 		for i := 0; i < 38; i++ {
-			id, err := d.Admit(ctx, "p1", "wf", 1, json.RawMessage(`{}`), json.RawMessage(`{}`), "k"+itoa(i))
+			id, err := d.Admit(ctx, "p1", "wf", 1, "wf/1", json.RawMessage(`{}`), json.RawMessage(`{}`), "k"+itoa(i))
 			if err != nil {
 				rejected++
 				continue
@@ -124,7 +124,7 @@ func TestRestartClassificationAndQueueBounds(t *testing.T) {
 		s, d, _ := appFixture(t, dir)
 		// Admit WITHOUT starting the dispatcher (crash between admit
 		// and wakeup).
-		id, err := d.Admit(ctx, "p1", "wf", 1, json.RawMessage(`{}`), json.RawMessage(`{}`), "k1")
+		id, err := d.Admit(ctx, "p1", "wf", 1, "wf/1", json.RawMessage(`{}`), json.RawMessage(`{}`), "k1")
 		if err != nil {
 			t.Fatalf("admit: %v", err)
 		}
@@ -137,12 +137,12 @@ func TestRestartClassificationAndQueueBounds(t *testing.T) {
 		defer s2.Close()
 		exec2 := &countingExec{calls: &atomic.Int64{}}
 		d2 := dispatch.New(s2, dispatch.Options{MaxActive: 4, MaxPending: 32}, func(runID string) (*inofy.Program, inofy.Bindings, inofy.RunRequest, error) {
-			prog, _, err := inofy.Compile(ctx, testDef(), testCatalog(), inofy.CompileOptions{})
+			prog, _, err := inofy.Compile(ctx, testDef(), testCatalog(), inofy.CompileOptions{ProgramID: "wf/1"})
 			if err != nil {
 				return nil, inofy.Bindings{}, inofy.RunRequest{}, err
 			}
 			return prog, inofy.Bindings{Nodes: exec2, Runs: s2}, inofy.RunRequest{
-				Ref:   inofy.ExecutionRef{RunID: runID, ProgramDigest: prog.Meta().ProgramDigest},
+				Ref:   inofy.ExecutionRef{RunID: runID, ProgramID: prog.Meta().ProgramID},
 				Input: json.RawMessage(`{}`),
 			}, nil
 		})
@@ -172,8 +172,8 @@ func TestRestartClassificationAndQueueBounds(t *testing.T) {
 			t.Fatal(err)
 		}
 		// Seed a running run directly (simulated crash mid-effect).
-		ref := inofy.ExecutionRef{RunID: "r", ProgramDigest: "p"}
-		admitData, _ := json.Marshal(map[string]any{"input_digest": "sha256:x", "limits": inofy.Limits{}})
+		ref := inofy.ExecutionRef{RunID: "r", ProgramID: "p"}
+		admitData, _ := json.Marshal(map[string]any{"limits": inofy.Limits{}})
 		if _, err := s.Commit(ctx, ref, inofy.RunCommit{
 			CommitID:   "r/0/a/0/1",
 			Events:     []inofy.Event{{Kind: inofy.EventRunAdmitted, Data: admitData}},
@@ -203,9 +203,9 @@ func TestRestartClassificationAndQueueBounds(t *testing.T) {
 		defer s2.Close()
 		exec2 := &countingExec{calls: &atomic.Int64{}}
 		d2 := dispatch.New(s2, dispatch.Options{MaxActive: 4, MaxPending: 32}, func(runID string) (*inofy.Program, inofy.Bindings, inofy.RunRequest, error) {
-			prog, _, _ := inofy.Compile(ctx, testDef(), testCatalog(), inofy.CompileOptions{})
+			prog, _, _ := inofy.Compile(ctx, testDef(), testCatalog(), inofy.CompileOptions{ProgramID: "wf/1"})
 			return prog, inofy.Bindings{Nodes: exec2, Runs: s2}, inofy.RunRequest{
-				Ref:   inofy.ExecutionRef{RunID: runID, ProgramDigest: prog.Meta().ProgramDigest},
+				Ref:   inofy.ExecutionRef{RunID: runID, ProgramID: prog.Meta().ProgramID},
 				Input: json.RawMessage(`{}`),
 			}, nil
 		})
@@ -232,8 +232,8 @@ func TestRestartClassificationAndQueueBounds(t *testing.T) {
 	t.Run("waiting row stays quiescent across restart", func(t *testing.T) {
 		dir := t.TempDir()
 		s, _ := storage.Open(ctx, dir+"/app.db")
-		ref := inofy.ExecutionRef{RunID: "w", ProgramDigest: "p"}
-		admitData, _ := json.Marshal(map[string]any{"input_digest": "sha256:x", "limits": inofy.Limits{}})
+		ref := inofy.ExecutionRef{RunID: "w", ProgramID: "p"}
+		admitData, _ := json.Marshal(map[string]any{"limits": inofy.Limits{}})
 		s.Commit(ctx, ref, inofy.RunCommit{
 			CommitID:   "w/0/a/0/1",
 			Events:     []inofy.Event{{Kind: inofy.EventRunAdmitted, Data: admitData}},
@@ -258,9 +258,9 @@ func TestRestartClassificationAndQueueBounds(t *testing.T) {
 		s2, _ := storage.Open(ctx, dir+"/app.db")
 		defer s2.Close()
 		d2 := dispatch.New(s2, dispatch.Options{MaxActive: 4, MaxPending: 32}, func(runID string) (*inofy.Program, inofy.Bindings, inofy.RunRequest, error) {
-			prog, _, _ := inofy.Compile(ctx, testDef(), testCatalog(), inofy.CompileOptions{})
+			prog, _, _ := inofy.Compile(ctx, testDef(), testCatalog(), inofy.CompileOptions{ProgramID: "wf/1"})
 			return prog, inofy.Bindings{Nodes: &countingExec{calls: &atomic.Int64{}}, Runs: s2}, inofy.RunRequest{
-				Ref:   inofy.ExecutionRef{RunID: runID, ProgramDigest: prog.Meta().ProgramDigest},
+				Ref:   inofy.ExecutionRef{RunID: runID, ProgramID: prog.Meta().ProgramID},
 				Input: json.RawMessage(`{}`),
 			}, nil
 		})
@@ -277,11 +277,11 @@ func TestRestartClassificationAndQueueBounds(t *testing.T) {
 		dir := t.TempDir()
 		s, d, _ := appFixture(t, dir)
 		defer s.Close()
-		id1, err := d.Admit(ctx, "p1", "wf", 1, json.RawMessage(`{}`), json.RawMessage(`{}`), "dup-key")
+		id1, err := d.Admit(ctx, "p1", "wf", 1, "wf/1", json.RawMessage(`{}`), json.RawMessage(`{}`), "dup-key")
 		if err != nil {
 			t.Fatal(err)
 		}
-		id2, err := d.Admit(ctx, "p1", "wf", 1, json.RawMessage(`{}`), json.RawMessage(`{}`), "dup-key")
+		id2, err := d.Admit(ctx, "p1", "wf", 1, "wf/1", json.RawMessage(`{}`), json.RawMessage(`{}`), "dup-key")
 		if err != nil {
 			t.Fatal(err)
 		}

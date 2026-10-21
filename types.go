@@ -17,8 +17,9 @@ import (
 const (
 	// SchemaVersionV1 is the only executable document version of v0.1.
 	SchemaVersionV1 = "inofy.workflow/v1"
-	// NormalizerV1 names the digest input encoding (architecture §4.3).
-	NormalizerV1 = "inofy-normal-v1"
+	// CanonicalJSONV1 names the direct-value encoding used for exact
+	// replay and publication comparisons. It is not an identifier.
+	CanonicalJSONV1 = "inofy-normal-v1"
 )
 
 // Error is the stable run/compile error contract (architecture §8.6):
@@ -316,16 +317,19 @@ type NodeDescriptor struct {
 // CompileOptions carries host-supported features and the maximum
 // admissible graph limits. It grants no authority.
 type CompileOptions struct {
-	Features map[string]bool `json:"features,omitempty"`
-	Limits   Limits          `json:"limits,omitempty"`
+	// ProgramID is allocated by the immutable definition/run owner. It
+	// identifies the admitted program revision; INOFY does not derive it.
+	ProgramID string          `json:"program_id,omitempty"`
+	Features  map[string]bool `json:"features,omitempty"`
+	Limits    Limits          `json:"limits,omitempty"`
 }
 
 // ExecutionRef is the host-assigned run identity. Epoch is the exclusive
-// writer fence; ProgramDigest must match the compiled program.
+// writer fence; ProgramID must match the compiled immutable revision.
 type ExecutionRef struct {
 	RunID         string `json:"run_id"`
 	Epoch         uint64 `json:"epoch"`
-	ProgramDigest string `json:"program_digest"`
+	ProgramID     string `json:"program_id"`
 	HostBindingID string `json:"host_binding_id,omitempty"`
 }
 
@@ -464,16 +468,17 @@ type Usage struct {
 // CheckpointEnvelope binds the opaque Eino payload to every identity
 // needed to gate a resume (architecture §8.3).
 type CheckpointEnvelope struct {
-	ContinuationGeneration int    `json:"continuation_generation"`
-	DefinitionDigest       string `json:"definition_digest"`
-	ProgramDigest          string `json:"program_digest"`
-	EinoBuild              string `json:"eino_build"`
-	SerializerVersion      string `json:"serializer_version"`
-	InputDigest            string `json:"input_digest"`
-	Usage                  Usage  `json:"usage"`
-	EventBoundary          uint64 `json:"event_boundary"`
-	Payload                []byte `json:"payload"`
-	Checksum               string `json:"checksum"`
+	ContinuationGeneration int             `json:"continuation_generation"`
+	RunID                  string          `json:"run_id"`
+	ProgramID              string          `json:"program_id"`
+	HostBindingID          string          `json:"host_binding_id,omitempty"`
+	CompilerVersion        string          `json:"compiler_version"`
+	EinoBuild              string          `json:"eino_build"`
+	CatalogContract        json.RawMessage `json:"catalog_contract"`
+	SerializerVersion      string          `json:"serializer_version"`
+	Usage                  Usage           `json:"usage"`
+	EventBoundary          uint64          `json:"event_boundary"`
+	Payload                []byte          `json:"payload"`
 }
 
 // StateTransition is the CAS expectation in a commit: the commit is only
@@ -492,6 +497,12 @@ type RunCommit struct {
 	Results    []ProtectedResult   `json:"results,omitempty"`
 	Checkpoint *CheckpointEnvelope `json:"checkpoint,omitempty"`
 	Transition StateTransition     `json:"transition"`
+	// AdmittedInput is private RunStore state, stored once with the run
+	// and omitted from the public event projection.
+	AdmittedInput json.RawMessage `json:"-"`
+	// ResumeClaim stores exact private answers with their idempotency key.
+	ResumeKey     string                     `json:"-"`
+	ResumeAnswers map[string]json.RawMessage `json:"-"`
 }
 
 // Receipt is the host-assigned durable acknowledgement of a commit.
@@ -508,28 +519,27 @@ type OperationRef struct {
 	Attempt      int    `json:"attempt"`
 }
 
-// RecoveryState is what RunStore.Load returns: admitted identities, input
-// digest and limits, current status, durable usage, the latest committed
+// RecoveryState is what RunStore.Load returns: admitted identities, exact
+// private input and resume claim values, limits, current status, durable usage, the latest committed
 // checkpoint, the outstanding wait projection and unresolved operations.
 // Interrupts maps each outstanding wait RequestID to the Eino resume
 // identity committed at the waiting boundary; Gates lists the internal
 // gate interruptions resumed alongside authorized answers.
 type RecoveryState struct {
-	Ref                  ExecutionRef        `json:"ref"`
-	Status               RunStatus           `json:"status"`
-	InputDigest          string              `json:"input_digest"`
-	Limits               Limits              `json:"limits"`
-	Usage                Usage               `json:"usage"`
-	LatestCheckpoint     *CheckpointEnvelope `json:"latest_checkpoint,omitempty"`
-	Waits                []WaitRequest       `json:"waits,omitempty"`
-	Interrupts           map[string]string   `json:"interrupts,omitempty"`
-	Gates                []string            `json:"gates,omitempty"`
-	// ResumeKey/ResumeAnswersDigest record the last committed resume
-	// claim so an identical authorized repeat returns the recorded
-	// outcome instead of re-executing (§8.4).
-	ResumeKey            string              `json:"resume_key,omitempty"`
-	ResumeAnswersDigest  string              `json:"resume_answers_digest,omitempty"`
-	UnresolvedOperations []OperationRef      `json:"unresolved_operations,omitempty"`
+	Ref              ExecutionRef        `json:"ref"`
+	Status           RunStatus           `json:"status"`
+	AdmittedInput    json.RawMessage     `json:"-"`
+	Limits           Limits              `json:"limits"`
+	Usage            Usage               `json:"usage"`
+	LatestCheckpoint *CheckpointEnvelope `json:"latest_checkpoint,omitempty"`
+	Waits            []WaitRequest       `json:"waits,omitempty"`
+	Interrupts       map[string]string   `json:"interrupts,omitempty"`
+	Gates            []string            `json:"gates,omitempty"`
+	// ResumeKey/ResumeAnswers record the exact last committed claim so
+	// identical authorized replay returns the recorded outcome.
+	ResumeKey            string                     `json:"resume_key,omitempty"`
+	ResumeAnswers        map[string]json.RawMessage `json:"-"`
+	UnresolvedOperations []OperationRef             `json:"unresolved_operations,omitempty"`
 }
 
 // RunResult reports one settled or suspended run.

@@ -104,16 +104,35 @@ func (j *runJournal) commitID(path string, attempt int) string {
 // no-journal embedding: progress is allowed without durable evidence.
 func (j *runJournal) commit(ctx context.Context, path string, attempt int,
 	tr StateTransition, events []Event, results []ProtectedResult) error {
+	return j.commitPrivate(ctx, path, attempt, tr, events, results, nil, "", nil)
+}
+
+func (j *runJournal) commitAdmission(ctx context.Context, path string, attempt int,
+	tr StateTransition, events []Event, input json.RawMessage) error {
+	return j.commitPrivate(ctx, path, attempt, tr, events, nil, input, "", nil)
+}
+
+func (j *runJournal) commitResumeClaim(ctx context.Context, path string, attempt int,
+	tr StateTransition, events []Event, key string, answers map[string]json.RawMessage) error {
+	return j.commitPrivate(ctx, path, attempt, tr, events, nil, nil, key, answers)
+}
+
+func (j *runJournal) commitPrivate(ctx context.Context, path string, attempt int,
+	tr StateTransition, events []Event, results []ProtectedResult, input json.RawMessage,
+	resumeKey string, resumeAnswers map[string]json.RawMessage) error {
 	if j.store == nil {
 		return nil
 	}
 	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), persistenceTimeout)
 	defer cancel()
 	_, err := j.store.Commit(pctx, j.ref, RunCommit{
-		CommitID:   j.commitID(path, attempt),
-		Events:     events,
-		Results:    results,
-		Transition: tr,
+		CommitID:      j.commitID(path, attempt),
+		Events:        events,
+		Results:       results,
+		Transition:    tr,
+		AdmittedInput: input,
+		ResumeKey:     resumeKey,
+		ResumeAnswers: resumeAnswers,
 	})
 	if err != nil {
 		var ie *Error

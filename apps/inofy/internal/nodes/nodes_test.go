@@ -196,12 +196,12 @@ func TestAppNodeCatalog(t *testing.T) {
 		}
 		defer st.Close()
 		// Seed a run and commit one node execution.
-		runID, err := st.Admit(ctx, "p", "wf", 1,
+		runID, err := st.Admit(ctx, "p", "wf", 1, "wf/1",
 			json.RawMessage(`{}`), json.RawMessage(`{}`), "ak")
 		if err != nil {
 			t.Fatal(err)
 		}
-		ref := inofy.ExecutionRef{RunID: runID}
+		ref := inofy.ExecutionRef{RunID: runID, ProgramID: "wf/1"}
 		if _, err := st.Commit(ctx, ref, inofy.RunCommit{
 			CommitID:   runID + "/0/c1",
 			Transition: inofy.StateTransition{Expected: "", Target: inofy.RunAdmitted},

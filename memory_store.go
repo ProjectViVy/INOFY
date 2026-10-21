@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"sort"
 	"sync"
-
-	"github.com/ProjectViVy/inofy/internal/definition"
 )
 
 // MemoryRunStore is the in-memory RunStore adapter for tests and
@@ -21,21 +19,21 @@ type MemoryRunStore struct {
 }
 
 type memRun struct {
-	ref         ExecutionRef
-	status      RunStatus
-	commits     map[string]memCommit
-	unresolved  map[string]OperationRef
-	events      []Event
-	results     int
-	usage       Usage
-	limits      Limits
-	inputDigest string
-	checkpoint  *CheckpointEnvelope
-	waits       []WaitRequest
-	interrupts  map[string]string
-	gates       []string
-	resumeKey   string
-	resumeDig   string
+	ref           ExecutionRef
+	status        RunStatus
+	commits       map[string]memCommit
+	unresolved    map[string]OperationRef
+	events        []Event
+	results       int
+	usage         Usage
+	limits        Limits
+	input         json.RawMessage
+	checkpoint    *CheckpointEnvelope
+	waits         []WaitRequest
+	interrupts    map[string]string
+	gates         []string
+	resumeKey     string
+	resumeAnswers map[string]json.RawMessage
 }
 
 type memCommit struct {
@@ -60,6 +58,22 @@ func (m *MemoryRunStore) Commit(ctx context.Context, ref ExecutionRef, change Ru
 	if err != nil {
 		return Receipt{}, err
 	}
+	var admittedInput json.RawMessage
+	if len(change.AdmittedInput) > 0 {
+		admittedInput, err = NormalizeJSONValue(change.AdmittedInput)
+		if err != nil {
+			return Receipt{}, &Error{Code: ErrInvalidDefinition, Path: ref.RunID,
+				Err: err, Message: "admitted input is not a valid JSON value"}
+		}
+	}
+	var resumeAnswers map[string]json.RawMessage
+	if change.ResumeKey != "" {
+		resumeAnswers, err = normalizeAnswers(change.ResumeAnswers)
+		if err != nil {
+			return Receipt{}, &Error{Code: ErrInvalidDefinition, Path: ref.RunID,
+				Err: err, Message: "resume claim contains invalid values"}
+		}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	run, ok := m.runs[ref.RunID]
@@ -73,7 +87,10 @@ func (m *MemoryRunStore) Commit(ctx context.Context, ref ExecutionRef, change Ru
 			commits:    map[string]memCommit{},
 			unresolved: map[string]OperationRef{},
 		}
-		m.runs[ref.RunID] = run
+	}
+	if ok && (run.ref.ProgramID != ref.ProgramID || run.ref.HostBindingID != ref.HostBindingID) {
+		return Receipt{}, &Error{Code: ErrCheckpointIncompatible, Path: ref.RunID,
+			Message: "program or host binding identity mismatch"}
 	}
 	if prev, ok := run.commits[change.CommitID]; ok {
 		if prev.body == body {
@@ -89,18 +106,21 @@ func (m *MemoryRunStore) Commit(ctx context.Context, ref ExecutionRef, change Ru
 			return Receipt{}, &Error{Code: ErrStaleWriter, Path: ref.RunID,
 				Message: "writer epoch mismatch"}
 		}
-		if ref.Epoch > run.ref.Epoch {
-			run.ref.Epoch = ref.Epoch
-		}
-		if run.ref.ProgramDigest != ref.ProgramDigest {
-			return Receipt{}, &Error{Code: ErrCheckpointIncompatible, Path: ref.RunID,
-				Message: "program digest mismatch"}
-		}
 		if run.status != change.Transition.Expected {
 			return Receipt{}, &Error{Code: ErrRevisionConflict, Path: ref.RunID,
 				Message: fmt.Sprintf("run is %q, commit expects %q",
 					run.status, change.Transition.Expected)}
 		}
+	}
+	if len(admittedInput) > 0 && len(run.input) > 0 && !sameJSON(run.input, admittedInput) {
+		return Receipt{}, &Error{Code: ErrIdempotencyConflict, Path: ref.RunID,
+			Message: "run was admitted with different input values"}
+	}
+	if !ok {
+		m.runs[ref.RunID] = run
+	}
+	if ref.Epoch > run.ref.Epoch {
+		run.ref.Epoch = ref.Epoch
 	}
 	run.status = change.Transition.Target
 	if change.Checkpoint != nil {
@@ -116,11 +136,9 @@ func (m *MemoryRunStore) Commit(ctx context.Context, ref ExecutionRef, change Ru
 		run.events = append(run.events, evCopy)
 		if ev.Kind == EventRunAdmitted && len(ev.Data) > 0 {
 			var meta struct {
-				InputDigest string `json:"input_digest"`
-				Limits      Limits `json:"limits"`
+				Limits Limits `json:"limits"`
 			}
 			if json.Unmarshal(ev.Data, &meta) == nil {
-				run.inputDigest = meta.InputDigest
 				run.limits = meta.Limits
 			}
 		}
@@ -137,14 +155,6 @@ func (m *MemoryRunStore) Commit(ctx context.Context, ref ExecutionRef, change Ru
 			}
 		}
 		if ev.Kind == EventRunResumed && len(ev.Data) > 0 {
-			var meta struct {
-				IdempotencyKey string `json:"idempotency_key"`
-				AnswersDigest  string `json:"answers_digest"`
-			}
-			if json.Unmarshal(ev.Data, &meta) == nil {
-				run.resumeKey = meta.IdempotencyKey
-				run.resumeDig = meta.AnswersDigest
-			}
 			run.waits = nil
 			run.interrupts = nil
 			run.gates = nil
@@ -164,6 +174,13 @@ func (m *MemoryRunStore) Commit(ctx context.Context, ref ExecutionRef, change Ru
 			}
 		}
 		run.usage.Attempts++
+	}
+	if len(admittedInput) > 0 {
+		run.input = append(json.RawMessage(nil), admittedInput...)
+	}
+	if change.ResumeKey != "" {
+		run.resumeKey = change.ResumeKey
+		run.resumeAnswers = cloneRawMap(resumeAnswers)
 	}
 	for _, r := range change.Results {
 		run.unresolved[fmt.Sprintf("%s/%d", r.Path, r.Attempt)] = OperationRef{
@@ -211,7 +228,7 @@ func (m *MemoryRunStore) Load(ctx context.Context, runID string) (RecoveryState,
 	return RecoveryState{
 		Ref:                  run.ref,
 		Status:               run.status,
-		InputDigest:          run.inputDigest,
+		AdmittedInput:        append(json.RawMessage(nil), run.input...),
 		Limits:               run.limits,
 		Usage:                run.usage,
 		LatestCheckpoint:     cp,
@@ -219,7 +236,7 @@ func (m *MemoryRunStore) Load(ctx context.Context, runID string) (RecoveryState,
 		Interrupts:           ints,
 		Gates:                append([]string(nil), run.gates...),
 		ResumeKey:            run.resumeKey,
-		ResumeAnswersDigest:  run.resumeDig,
+		ResumeAnswers:        cloneRawMap(run.resumeAnswers),
 		UnresolvedOperations: ops,
 	}, nil
 }
@@ -243,23 +260,33 @@ func opKeyFor(ev Event) string { return fmt.Sprintf("%s/%d", ev.Path, ev.Attempt
 // idempotency comparison via the JSON wire form.
 func commitBody(c RunCommit) (string, error) {
 	raw, err := json.Marshal(map[string]any{
-		"events":     c.Events,
-		"results":    c.Results,
-		"checkpoint": c.Checkpoint,
-		"transition": c.Transition,
+		"events":         c.Events,
+		"results":        c.Results,
+		"checkpoint":     c.Checkpoint,
+		"transition":     c.Transition,
+		"admitted_input": c.AdmittedInput,
+		"resume_key":     c.ResumeKey,
+		"resume_answers": c.ResumeAnswers,
 	})
 	if err != nil {
 		return "", &Error{Code: ErrInvalidDefinition, Err: err,
 			Message: "commit body cannot marshal"}
 	}
-	var doc any
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		return "", &Error{Code: ErrInvalidDefinition, Err: err}
-	}
-	b, err := definition.Canonical(doc)
+	b, err := NormalizeJSONValue(raw)
 	if err != nil {
 		return "", &Error{Code: ErrInvalidDefinition, Err: err,
 			Message: "commit body is not canonicalizable"}
 	}
 	return string(b), nil
+}
+
+func cloneRawMap(src map[string]json.RawMessage) map[string]json.RawMessage {
+	if src == nil {
+		return nil
+	}
+	out := make(map[string]json.RawMessage, len(src))
+	for key, value := range src {
+		out[key] = append(json.RawMessage(nil), value...)
+	}
+	return out
 }

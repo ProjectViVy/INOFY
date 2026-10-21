@@ -93,8 +93,12 @@ func suspendDef() inofy.Definition {
 }
 
 func suspendCatalog() inofy.Catalog {
+	return suspendCatalogWithImplementation("impl-w")
+}
+
+func suspendCatalogWithImplementation(implementationID string) inofy.Catalog {
 	c, _ := inofy.NewCatalog([]inofy.NodeDescriptor{
-		{TypeID: "inofy.waiter@1", ImplementationID: "impl-w",
+		{TypeID: "inofy.waiter@1", ImplementationID: implementationID,
 			SupportsWait: true, OutputSchema: json.RawMessage(`{"type":"object"}`)},
 		{TypeID: "inofy.value@1", ImplementationID: "impl-1",
 			OutputSchema: json.RawMessage(`{"type":"object"}`)},
@@ -109,14 +113,14 @@ func TestSuspensionBarrier(t *testing.T) {
 		exec := newSuspendExec()
 		sRan := exec.sRan
 		store := inofy.NewMemoryRunStore()
-		prog, diags, err := inofy.Compile(ctx, suspendDef(), suspendCatalog(), inofy.CompileOptions{})
+		prog, diags, err := inofy.Compile(ctx, suspendDef(), suspendCatalog(), inofy.CompileOptions{ProgramID: "test-program"})
 		if err != nil || len(diags) != 0 {
 			t.Fatalf("compile: %v %#v", err, diags)
 		}
 		done := make(chan inofy.RunResult, 1)
 		go func() {
 			res, _ := prog.Run(ctx, inofy.RunRequest{
-				Ref:   inofy.ExecutionRef{RunID: "r", ProgramDigest: prog.Meta().ProgramDigest},
+				Ref:   inofy.ExecutionRef{RunID: "r", ProgramID: prog.Meta().ProgramID},
 				Input: json.RawMessage(`{}`),
 			}, inofy.Bindings{Nodes: exec, Runs: store})
 			done <- res
@@ -175,12 +179,12 @@ func TestSuspensionBarrier(t *testing.T) {
 			failOn: func(c inofy.RunCommit) bool {
 				return c.Transition.Target == inofy.RunWaiting
 			}}
-		prog, _, err := inofy.Compile(ctx, suspendDef(), suspendCatalog(), inofy.CompileOptions{})
+		prog, _, err := inofy.Compile(ctx, suspendDef(), suspendCatalog(), inofy.CompileOptions{ProgramID: "test-program"})
 		if err != nil {
 			t.Fatalf("compile: %v", err)
 		}
 		res, _ := prog.Run(ctx, inofy.RunRequest{
-			Ref:   inofy.ExecutionRef{RunID: "r", ProgramDigest: prog.Meta().ProgramDigest},
+			Ref:   inofy.ExecutionRef{RunID: "r", ProgramID: prog.Meta().ProgramID},
 			Input: json.RawMessage(`{}`),
 		}, inofy.Bindings{Nodes: exec, Runs: fs})
 		if res.Status != inofy.RunRecoveryRequired {
