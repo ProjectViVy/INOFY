@@ -19,6 +19,7 @@ import (
 type suspendExec struct {
 	arrive  chan struct{}
 	barrier chan struct{}
+	started chan struct{}
 	release chan struct{}
 	sRan    *atomic.Int64
 }
@@ -28,6 +29,7 @@ func newSuspendExec() *suspendExec {
 		arrive:  make(chan struct{}, 2),
 		barrier: make(chan struct{}),
 		release: make(chan struct{}),
+		started: make(chan struct{}),
 		sRan:    &atomic.Int64{},
 	}
 }
@@ -48,6 +50,7 @@ func (e *suspendExec) Execute(ctx context.Context, c inofy.NodeCall) (inofy.Node
 			ContinuationRef: "cont-" + c.Path,
 		}}, nil
 	default:
+		close(e.started)
 		select {
 		case <-e.release:
 		case <-ctx.Done():
@@ -58,24 +61,32 @@ func (e *suspendExec) Execute(ctx context.Context, c inofy.NodeCall) (inofy.Node
 	}
 }
 
-// waitForEvents polls the store until n events of kind exist or the
-// deadline passes; used to interleave the sibling release with the
-// committed wait boundary.
-func waitForEvents(store *inofy.MemoryRunStore, runID string, kind inofy.EventKind, n int) bool {
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		var count int
-		for _, ev := range store.Events(runID) {
-			if ev.Kind == kind {
-				count++
+// suspendStore signals successful wait commits without polling or ordering sleeps.
+type suspendStore struct {
+	*inofy.MemoryRunStore
+	waits atomic.Int64
+	ready chan struct{}
+}
+
+func (s *suspendStore) Commit(ctx context.Context, ref inofy.ExecutionRef, c inofy.RunCommit) (inofy.Receipt, error) {
+	receipt, err := s.MemoryRunStore.Commit(ctx, ref, c)
+	if err == nil {
+		for _, ev := range c.Events {
+			if ev.Kind == inofy.EventNodeWait && s.waits.Add(1) == 2 {
+				close(s.ready)
 			}
 		}
-		if count >= n {
-			return true
-		}
-		time.Sleep(5 * time.Millisecond)
 	}
-	return false
+	return receipt, err
+}
+
+func awaitSuspendSignal(t *testing.T, ctx context.Context, ch <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-ctx.Done():
+		t.Fatalf("suspension barrier: %v", ctx.Err())
+	}
 }
 
 func suspendDef() inofy.Definition {
@@ -107,35 +118,52 @@ func suspendCatalogWithImplementation(implementationID string) inofy.Catalog {
 }
 
 func TestSuspensionBarrier(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
 
 	t.Run("two waits quiesce; in-flight sibling commits; no new effect starts", func(t *testing.T) {
 		exec := newSuspendExec()
 		sRan := exec.sRan
-		store := inofy.NewMemoryRunStore()
+		store := &suspendStore{MemoryRunStore: inofy.NewMemoryRunStore(), ready: make(chan struct{})}
 		prog, diags, err := inofy.Compile(ctx, suspendDef(), suspendCatalog(), inofy.CompileOptions{ProgramID: "test-program"})
 		if err != nil || len(diags) != 0 {
 			t.Fatalf("compile: %v %#v", err, diags)
 		}
-		done := make(chan inofy.RunResult, 1)
+		type outcome struct {
+			res inofy.RunResult
+			err error
+		}
+		done := make(chan outcome, 1)
 		go func() {
-			res, _ := prog.Run(ctx, inofy.RunRequest{
+			res, runErr := prog.Run(ctx, inofy.RunRequest{
 				Ref:   inofy.ExecutionRef{RunID: "r", ProgramID: prog.Meta().ProgramID},
 				Input: json.RawMessage(`{}`),
 			}, inofy.Bindings{Nodes: exec, Runs: store})
-			done <- res
+			done <- outcome{res, runErr}
 		}()
 		// Both waits must be in flight before either returns so both
 		// prompts commit; the sibling stays mid-effect until then.
 		for i := 0; i < 2; i++ {
-			<-exec.arrive
+			awaitSuspendSignal(t, ctx, exec.arrive)
 		}
+		awaitSuspendSignal(t, ctx, exec.started)
 		close(exec.barrier)
-		if !waitForEvents(store, "r", inofy.EventNodeWait, 2) {
-			t.Fatal("two waits never committed")
+		awaitSuspendSignal(t, ctx, store.ready)
+		running, err := store.Load(ctx, "r")
+		if err != nil || running.Status != inofy.RunRunning || running.LatestCheckpoint != nil {
+			t.Fatalf("in-flight sibling did not hold run running: status=%s checkpoint=%v err=%v", running.Status, running.LatestCheckpoint, err)
 		}
 		close(exec.release)
-		res := <-done
+		var completed outcome
+		select {
+		case completed = <-done:
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+		if completed.err != nil {
+			t.Fatalf("run: %v", completed.err)
+		}
+		res := completed.res
 		if res.Status != inofy.RunWaiting {
 			t.Fatalf("want waiting, got %q", res.Status)
 		}
@@ -143,11 +171,19 @@ func TestSuspensionBarrier(t *testing.T) {
 			t.Fatalf("want 2 outstanding waits, got %d", len(res.Waits))
 		}
 		var waits, waitingCommit int
+		var siblingCompleted bool
 		for _, ev := range store.Events("r") {
 			switch ev.Kind {
 			case inofy.EventNodeWait:
 				waits++
+			case inofy.EventNodeCompleted:
+				if ev.Path == "/graph/nodes/s" {
+					siblingCompleted = true
+				}
 			case inofy.EventRunWaiting:
+				if !siblingCompleted {
+					t.Fatal("waiting committed before sibling completion")
+				}
 				waitingCommit++
 			}
 		}
@@ -183,14 +219,20 @@ func TestSuspensionBarrier(t *testing.T) {
 		if err != nil {
 			t.Fatalf("compile: %v", err)
 		}
-		res, _ := prog.Run(ctx, inofy.RunRequest{
+		res, runErr := prog.Run(ctx, inofy.RunRequest{
 			Ref:   inofy.ExecutionRef{RunID: "r", ProgramID: prog.Meta().ProgramID},
 			Input: json.RawMessage(`{}`),
 		}, inofy.Bindings{Nodes: exec, Runs: fs})
+		if runErr == nil {
+			t.Fatal("failed checkpoint commit returned no error")
+		}
 		if res.Status != inofy.RunRecoveryRequired {
 			t.Fatalf("want recovery_required, got %q", res.Status)
 		}
-		st, _ := inner.Load(ctx, "r")
+		st, err := inner.Load(ctx, "r")
+		if err != nil {
+			t.Fatal(err)
+		}
 		if st.Status != inofy.RunRunning {
 			t.Fatalf("store status %q after failed waiting commit", st.Status)
 		}
